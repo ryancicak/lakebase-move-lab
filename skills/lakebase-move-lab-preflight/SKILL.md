@@ -10,14 +10,14 @@ SPDX-License-Identifier: Apache-2.0
 
 # Lakebase Move Lab preflight
 
-The Lakebase Move Lab is a notebook that promotes and moves a Lakebase environment between projects. Its preflight notebook, `lakebase_move_lab_preflight`, tries everything the lab needs (downloads, sign-in, a bundle deploy, Postgres connections, a second database, roles and grants, `pg_dump` and `pg_restore`, branches, snapshots, a synced table) on one throwaway project, deletes it, and reports each check as ✅ pass, ⚠️ warning, ❌ fail, or ⏭️ skipped, with a fix.
+The Lakebase Move Lab is a notebook that promotes and moves a Lakebase environment between projects, optionally into a second workspace. Its preflight notebook, `lakebase_move_lab_preflight`, tries everything the lab needs (downloads, sign-in, a bundle deploy, Postgres connections, a second database, roles and grants, `pg_dump` and `pg_restore`, branches, snapshots, a synced table, and, if set, the second workspace) on a throwaway project, deletes it, and reports each check as ✅ pass, ⚠️ warning, ❌ fail, or ⏭️ skipped, with a fix.
 
 This skill runs that notebook as a one-time serverless job and explains the results.
 
 ## Steps
 
-1. Tell the user in one or two sentences what will happen: a one-time serverless job that takes about 3 minutes and uses one throwaway Lakebase project, named `lb-move-pre-...`, which it deletes at the end. If the user named a catalog for the lab, use it; otherwise use `main`.
-2. Add ONE Python cell with exactly the code in "The cell" below, changing only `CATALOG`, and run it. Don't split, shorten, or rewrite it. It waits for the job to finish, so it runs for a few minutes.
+1. Tell the user in one or two sentences what will happen: a one-time serverless job that takes about 3 minutes and uses one throwaway Lakebase project, named `lb-move-pre-...`, which it deletes at the end. If the user named a catalog for the lab, use it; otherwise use `main`. If they'll put the lab's new home in a second workspace, use the secret scope they named for it (the lab's `NEW_WORKSPACE_SECRETS`); otherwise leave it empty.
+2. Add ONE Python cell with exactly the code in "The cell" below, changing only `CATALOG` and `NEW_WORKSPACE_SECRETS`, and run it. Don't split, shorten, or rewrite it. It waits for the job to finish, so it runs for a few minutes.
 3. When the cell finishes, answer from its output:
    - First line: the verdict, one of ✅ Ready, ⚠️ Ready with notes, or ❌ Not ready.
    - Then a short table of every check that isn't ✅: the check, what it means for the lab, and the fix. Use the fix from the output; the troubleshooting table below adds context.
@@ -34,12 +34,14 @@ import time
 from databricks.sdk import WorkspaceClient
 
 CATALOG = "main"  # the catalog you'll use for the lab's synced table
+NEW_WORKSPACE_SECRETS = ""  # the secret scope for a second workspace, if the lab will use one
 REPO = "https://github.com/ryancicak/lakebase-move-lab"
 NOTEBOOK = "lakebase_move_lab_preflight"
 
 w = WorkspaceClient()
+params = {"catalog": CATALOG, "new_workspace_secrets": NEW_WORKSPACE_SECRETS}
 task = {"task_key": "preflight", "timeout_seconds": 1800,
-        "notebook_task": {"notebook_path": NOTEBOOK, "source": "GIT", "base_parameters": {"catalog": CATALOG}}}
+        "notebook_task": {"notebook_path": NOTEBOOK, "source": "GIT", "base_parameters": params}}
 spec = {"run_name": "Lakebase Move Lab preflight", "tasks": [task],
         "git_source": {"git_url": REPO, "git_provider": "gitHub", "git_branch": "main"}}
 source = f"{REPO} (main)"
@@ -97,6 +99,12 @@ else:
 | Schema and Delta table in the catalog (warning) | The lab skips its synced-table steps | Pick a catalog where the user can create schemas and set `CATALOG` in the lab's Module 0 helpers cell to it (it's a setting in the code, not a widget), or ask for `CREATE SCHEMA` on the catalog |
 | Synced table into Lakebase (warning) | The lab skips its synced-table steps | Read the error in the detail |
 | prevent_destroy guards the bundle, Cleanup | The lab's cleanup may not work | Delete what the detail lists, and send it to the lab's owner |
+| Second workspace: sign-in | The lab can't use the second workspace | The secret scope needs `host` (the other workspace's URL), plus `token`, or `client-id` and `client-secret`; the user needs READ on the scope |
+| Second workspace: no leftovers from an earlier lab run | The lab trips over an old new-home project there | Run the lab's Module 7, or run the preflight notebook with `CLEAN_LEFTOVERS = True` |
+| Second workspace: bundle deploys a Lakebase project | The lab can't build its new home there | Permission to create Lakebase projects in that workspace, and a writable home folder there |
+| Second workspace: connect from here | No Postgres access to the new home | The notebook reaches that workspace's computes at their public address, found in public DNS (dns.google or cloudflare-dns.com); a timeout points at the serverless network policy |
+| Second workspace: restore a dump from this workspace | The move itself fails across workspaces | Send the error to the lab's owner |
+| Second workspace: synced tables (warning) | The other workspace has its own metastore, so the lab skips the synced table on the new side | Nothing to do for the lab; in a real move, copy the source Delta table over first |
 
 ⏭️ skipped means a check it depends on failed; fix that one first.
 

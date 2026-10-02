@@ -2,7 +2,7 @@
 
 `lakebase_move_lab` is one Databricks notebook. It runs on serverless compute, and its first line pins serverless environment version 5 (versions 1 through 4 also passed; classic clusters weren't tested). A full Run all takes about 5 minutes. The expected outputs below come from tested runs on October 1 and 2, 2026, including an interactive Run all by a workspace user. Your hosts, IDs, and timings will differ.
 
-Two projects in one workspace stand in for two workspaces. A branch can't leave its project even inside one workspace, so moving between two projects is the same job as moving between workspaces. The lab says where a real cross-workspace move differs.
+Two projects in one workspace stand in for two workspaces. A branch can't leave its project even inside one workspace, so moving between two projects is the same job as moving between workspaces. The lab says where a real cross-workspace move differs. An optional two-workspace mode puts the new home in a real second workspace (see "Two-workspace mode" below).
 
 ## Settings a learner can change
 
@@ -10,7 +10,8 @@ All in Module 0's helpers cell, **Connect, name the two projects, and define hel
 
 - `CATALOG` (default `main`): the Unity Catalog catalog for the synced-table steps. The learner needs `CREATE SCHEMA` on it. If they don't have it, the lab skips the synced-table steps and says why; it doesn't fail.
 - `DO_SYNCED_TABLES` (default `True`): set to `False` to skip the synced-table steps on purpose.
-- Names: the projects are `lb-move-old-<slug>-<user id>` and `lb-move-new-<slug>-<user id>`, where the slug is the part of the user name before `@`, lowercased, with anything else turned into hyphens, cut to 16 characters. The schema is `<catalog>.lb_move_<slug with underscores>`. The bundle is named `lb-move-lab` and keeps its state in `/Workspace/Users/<user>/.bundle/lb-move-lab`.
+- `NEW_WORKSPACE_SECRETS` (default `None`): the name of a secret scope that holds another workspace's `host` and the learner's credentials there (`token`, or `client-id` and `client-secret` for a service principal). Set it, and the new home goes to that workspace (see "Two-workspace mode").
+- Names: the projects are `lb-move-old-<slug>-<user id>` and `lb-move-new-<slug>-<user id>`, where the slug is the part of the user name before `@`, lowercased, with anything else turned into hyphens, cut to 16 characters. The schema is `<catalog>.lb_move_<slug with underscores>`. The bundle is named `lb-move-lab` and keeps its state in `/Workspace/Users/<user>/.bundle/lb-move-lab`, in the new home's workspace.
 
 ## Before Module 0
 
@@ -95,6 +96,18 @@ No code. A checklist for a real move: before the day, on the day, and after. See
 - To start over, run Module 7, then Run all.
 - Don't run two copies of the lab at once as the same user: they share project and bundle names and collide.
 
+## Two-workspace mode (optional)
+
+Set `NEW_WORKSPACE_SECRETS` to a secret scope in the lab's workspace that holds `host` (the other workspace's URL) and `token` (a personal access token the learner created there), or `client-id` and `client-secret` for a service principal. The old home stays in the lab's workspace; the new home, its bundle, its Postgres sign-in, and its cleanup go to the other workspace. Tested on October 2, 2026, from an AWS workspace to an Azure workspace, as a serverless job: all 79 cells passed. What's different in the output:
+
+- The helpers cell prints `New home: lb-move-new-... in [REDACTED] (another workspace, as <user there>)`. Databricks hides output that matches a secret, so the other workspace's URL shows as `[REDACTED]` everywhere.
+- The new home's computes are reached at their public address. On serverless, every Lakebase hostname resolved to the same Databricks proxy address, and the proxy refused the other workspace's computes (`FATAL: External authorization failed`). So `connect()` and `run_pg()` look up the compute's public IP in public DNS (dns.google, then cloudflare-dns.com) and pass it as libpq's `hostaddr` (`PGHOSTADDR` for the tools), with the hostname still sent for TLS.
+- The cross-project branch and the cross-project snapshot are rejected with the same errors as in one workspace.
+- The restores exited 0 in about 5 seconds across clouds, and the copy was exact in every database.
+- **Move the synced table to the new home** prints `Skipped: the new home's workspace has its own metastore, ...` when the metastores differ, which they did in the test. The old sync keeps running until cleanup, and the gate counts the synced table as not used. With a shared metastore, it deletes the old sync and creates the new one through the other workspace (not tested).
+- The switch cell also prints `Old workspace:` and `New workspace:`. Writes were paused for 46 seconds, shorter because there was no sync swap.
+- Cleanup destroys the new home with the bundle in the other workspace, deletes its bundle folder there, and cleans up the lab's workspace as usual.
+
 ## The preflight notebook
 
 `lakebase_move_lab_preflight` runs before the lab, in about 2.5 minutes, as the same user and on the same compute the lab will use. It records 20 checks as ✅ pass, ⚠️ warning (the lab still runs, minus a step), ❌ fail (fix before the lab), or ⏭️ skipped (a check it depends on failed), each with a fix:
@@ -104,5 +117,6 @@ No code. A checklist for a real move: before the day, on the day, and after. See
 3. On a throwaway project, `lb-move-pre-<slug>-<user id>-<timestamp>`, deployed with the lab's bundle shape: bundle deploys a Lakebase project; connect with a login token; create a second database; roles, ownership, and grants; pg_dump and a filtered pg_restore; child branch and its compute; point-in-time branch; snapshots (warning only).
 4. Schema and Delta table in the catalog, and synced table into Lakebase (both warnings only; set the **catalog** widget to the catalog the lab will use).
 5. prevent_destroy guards the bundle; cleanup.
+6. Only with its **new_workspace_secrets** widget set (to the lab's `NEW_WORKSPACE_SECRETS` scope), six more: second workspace sign-in; no leftovers there; a bundle deploys the throwaway project there; connect from here (at the compute's public address); restore this workspace's filtered dump there (all 100 rows); synced tables (a warning when the metastores differ). In the October 2 test, from an AWS workspace to an Azure workspace: 25 passed, 1 warning (separate metastores), and cleanup ran in both workspaces.
 
 Each run has its own names, so two preflights at once don't collide, and a run deletes preflight leftovers older than 30 minutes. The last cell prints the verdict (ready, ready with notes, or not ready) and returns the results as JSON for Genie Code or a job. The `lakebase-move-lab-preflight` skill runs it as a one-time serverless job, from a copy next to the current notebook if there is one, otherwise straight from the GitHub repo.

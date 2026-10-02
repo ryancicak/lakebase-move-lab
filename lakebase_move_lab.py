@@ -32,7 +32,7 @@
 # MAGIC
 # MAGIC > It runs on Databricks serverless (environment version 5) in about 5 minutes. It installs what it needs as it goes, creates two small Lakebase projects, and deletes them at the end.
 # MAGIC
-# MAGIC > **Two projects stand in for two workspaces.** A branch can't leave its project, even inside one workspace. So moving between two projects is the same job as moving between workspaces. Where a real move between workspaces is different, the lab says so.
+# MAGIC > **Two projects stand in for two workspaces.** A branch can't leave its project, even inside one workspace. So moving between two projects is the same job as moving between workspaces. Where a real move between workspaces is different, the lab says so. Have a second workspace? You can put the new home there instead (see **Before you start**).
 
 # COMMAND ----------
 
@@ -43,6 +43,19 @@
 # MAGIC * **You need permission to create Lakebase projects** in this workspace.
 # MAGIC * **The synced-table steps need a catalog where you can create a schema.** The default is `main`. To use another one, set `CATALOG` in Module 0's helpers cell. If the lab can't create the schema, no problem: it skips those steps and tells you why. You can also set `DO_SYNCED_TABLES = False` to skip them on purpose.
 # MAGIC * **Run the cells in order.** Each one prints what it did, so you can stop and look anytime.
+# MAGIC
+# MAGIC > **Optional: use a real second workspace.** By default, both homes live in this workspace. To put the new home in another workspace:
+# MAGIC >
+# MAGIC > 1. Make a secret scope here, for example `lb-move-lab`.
+# MAGIC > 2. Add two secrets: `host`, the other workspace's URL, and `token`, a personal access token you created there. (A service principal works too: add `client-id` and `client-secret` instead of `token`.)
+# MAGIC > 3. In Module 0's helpers cell, set `NEW_WORKSPACE_SECRETS = "lb-move-lab"`.
+# MAGIC >
+# MAGIC > The lab signs in to both workspaces and runs the same steps. Two differences:
+# MAGIC >
+# MAGIC > * On serverless, Lakebase hostnames go to a Databricks proxy, and in testing it refused the other workspace's computes. So the lab looks up their public address (in public DNS) and connects to that.
+# MAGIC > * If the other workspace has its own metastore, the lab skips the synced table on the new side, because its Delta source would have to be copied over first.
+# MAGIC >
+# MAGIC > Databricks hides anything that matches a secret, so the other workspace's URL shows up as `[REDACTED]` in the output. The README has the commands.
 
 # COMMAND ----------
 
@@ -203,16 +216,18 @@ print(subprocess.run([str(CLI), "--version"], capture_output=True, text=True).st
 # MAGIC * **Sets up helpers** we'll reuse. One takes a database's **fingerprint**: a row count plus a checksum of every row, for each table. That's how we'll prove two copies are identical.
 # MAGIC * **Defines the app's migrations:** numbered SQL changes, run in order and recorded in a history table. That's what Flyway or Liquibase does for a real app.
 # MAGIC
-# MAGIC > This is also where `CATALOG` lives, if you need a catalog other than `main` for the synced-table steps.
+# MAGIC > This is also where you set `CATALOG`, if you need a catalog other than `main` for the synced-table steps, and `NEW_WORKSPACE_SECRETS`, if you want the new home in another workspace.
 
 # COMMAND ----------
 
 # DBTITLE 1,Connect, name the two projects, and define helpers
 """Connect to Databricks, pick per-user names, and define the helpers the rest of the lab uses."""
 import ctypes.util
+import json
 import re
 import shutil
 import time
+import urllib.request
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -248,17 +263,44 @@ w = WorkspaceClient()
 me = w.current_user.me()
 USER = me.user_name  # your Postgres user name
 
+# Optional: put the new home in another workspace. Leave this as None and both homes live in this workspace.
+# To use another workspace, make a secret scope here with its address ("host") and your credentials there
+# ("token", or "client-id" and "client-secret" for a service principal), and put the scope's name here.
+NEW_WORKSPACE_SECRETS = None
+
+
+def sign_in_elsewhere(scope):
+    """Sign in to the new home's workspace with the address and credentials in a secret scope."""
+    def secret(key):
+        try:
+            return dbutils.secrets.get(scope, key)
+        except Exception:
+            return None
+
+    host, token, client_id = secret("host"), secret("token"), secret("client-id")
+    if not host or not (token or client_id):
+        raise ValueError(f"Secret scope {scope} needs 'host', plus 'token' or 'client-id' and 'client-secret'")
+    if client_id:
+        return WorkspaceClient(host=host, client_id=client_id, client_secret=secret("client-secret"),
+                               auth_type="oauth-m2m")
+    return WorkspaceClient(host=host, token=token, auth_type="pat")
+
+
+w_new = sign_in_elsewhere(NEW_WORKSPACE_SECRETS) if NEW_WORKSPACE_SECRETS else w  # the new home's workspace
+TWO_WORKSPACES = w_new is not w
+NEW_USER = w_new.current_user.me().user_name if TWO_WORKSPACES else USER  # your Postgres user over there
+
 # Unique, readable names: your user name plus your numeric user id.
 slug = re.sub(r"[^a-z0-9]+", "-", USER.split("@")[0].lower()).strip("-")[:16].rstrip("-") or "user"
-OLD_ID = f"lb-move-old-{slug}-{me.id}"  # the old home (stands in for the old workspace)
-NEW_ID = f"lb-move-new-{slug}-{me.id}"  # the new home (stands in for the new workspace)
+OLD_ID = f"lb-move-old-{slug}-{me.id}"  # the old home, in this workspace
+NEW_ID = f"lb-move-new-{slug}-{me.id}"  # the new home, in this workspace or the other one
 DB = "databricks_postgres"  # the default database in every Lakebase project
 REPORTING_DB = "reporting"  # a second database the app uses (Module 1, Step 3)
 
 # The bundle that builds the new home (Module 3). The CLI keeps its deployment state under your home folder.
 BUNDLE_NAME = "lb-move-lab"
 BUNDLE_DIR = Path(tempfile.mkdtemp(prefix="lb_move_bundle_"))  # stands in for your Git checkout
-BUNDLE_ROOT = f"/Workspace/Users/{USER}/.bundle/{BUNDLE_NAME}"
+BUNDLE_ROOT = f"/Workspace/Users/{NEW_USER}/.bundle/{BUNDLE_NAME}"  # in the new home's workspace
 
 # Optional synced-table steps (Module 1, Step 6 and Module 4, Step 4).
 DO_SYNCED_TABLES = True
@@ -278,8 +320,18 @@ def branch_path(pid, branch):
     return f"projects/{pid}/branches/{branch}"
 
 
+def client(pid):
+    """The workspace a project lives in. The new home can be in another workspace."""
+    return w_new if pid == NEW_ID else w
+
+
+def pg_user(pid):
+    """Your Postgres user name in the project's workspace."""
+    return NEW_USER if pid == NEW_ID else USER
+
+
 def project_exists(pid):
-    return any(p.name == project_path(pid) for p in w.postgres.list_projects())
+    return any(p.name == project_path(pid) for p in client(pid).postgres.list_projects())
 
 
 def create_project(pid, label):
@@ -287,7 +339,7 @@ def create_project(pid, label):
     if project_exists(pid):
         print(f"Reusing project {pid}")
         return
-    w.postgres.create_project(
+    client(pid).postgres.create_project(
         project=Project(spec=ProjectSpec(display_name=label, pg_version=PG_VERSION)), project_id=pid
     ).wait()
     print(f"Created project {pid} (Postgres {PG_VERSION})")
@@ -296,12 +348,12 @@ def create_project(pid, label):
 def create_branch(pid, branch, source="production"):
     """Create a child branch from another branch in the SAME project (or reuse it)."""
     try:
-        w.postgres.get_branch(name=branch_path(pid, branch))
+        client(pid).postgres.get_branch(name=branch_path(pid, branch))
         print(f"Branch {branch} already exists in {pid}")
         return
     except Exception:
         pass
-    w.postgres.create_branch(
+    client(pid).postgres.create_branch(
         parent=project_path(pid),
         branch=Branch(spec=BranchSpec(source_branch=branch_path(pid, source), no_expiry=True)),
         branch_id=branch,
@@ -313,12 +365,12 @@ def endpoint_of(pid, branch, timeout=300):
     """Find the branch's compute and wait until it has a host. Creates one if none shows up."""
     started, created = time.time(), False
     while True:
-        endpoints = list(w.postgres.list_endpoints(parent=branch_path(pid, branch)))
+        endpoints = list(client(pid).postgres.list_endpoints(parent=branch_path(pid, branch)))
         for ep in endpoints:
             if ep.status and ep.status.hosts and ep.status.hosts.host:
                 return ep.name, ep.status.hosts.host
         if not endpoints and not created and time.time() - started > 60:
-            w.postgres.create_endpoint(
+            client(pid).postgres.create_endpoint(
                 parent=branch_path(pid, branch),
                 endpoint=Endpoint(spec=EndpointSpec(endpoint_type=EndpointType.ENDPOINT_TYPE_READ_WRITE,
                                                     autoscaling_limit_min_cu=0.5, autoscaling_limit_max_cu=2.0)),
@@ -333,16 +385,39 @@ def endpoint_of(pid, branch, timeout=300):
 def login(pid, branch):
     """Return (host, token): where to connect, and a fresh one-hour login token."""
     endpoint, host = endpoint_of(pid, branch)
-    return host, w.postgres.generate_database_credential(endpoint=endpoint).token
+    return host, client(pid).postgres.generate_database_credential(endpoint=endpoint).token
+
+
+def public_address(pid, host):
+    """The public IP of a compute in another workspace, or None for computes in this one.
+
+    On serverless, every Lakebase hostname resolves to a Databricks proxy, and in testing that proxy refused
+    another workspace's computes. Their public address works, so we look it up in public DNS.
+    """
+    if pid != NEW_ID or not TWO_WORKSPACES:
+        return None
+    for url in (f"https://dns.google/resolve?name={host}&type=A",
+                f"https://cloudflare-dns.com/dns-query?name={host}&type=A"):
+        try:
+            request = urllib.request.Request(url, headers={"accept": "application/dns-json"})
+            answers = json.load(urllib.request.urlopen(request, timeout=15)).get("Answer", [])
+            addresses = [a["data"] for a in answers if a.get("type") == 1]
+            if addresses:
+                return addresses[0]
+        except Exception:
+            pass
+    raise RuntimeError(f"Couldn't look up {host} in public DNS (dns.google or cloudflare-dns.com)")
 
 
 def connect(pid, branch, dbname=DB):
     """Open a Postgres connection to one database on a branch. Retries while the compute wakes up."""
     host, token = login(pid, branch)
+    address = public_address(pid, host)
     for attempt in range(6):
         try:
-            return psycopg.connect(host=host, dbname=dbname, user=USER, password=token,
-                                   sslmode="require", connect_timeout=30, autocommit=True)
+            return psycopg.connect(host=host, dbname=dbname, user=pg_user(pid), password=token,
+                                   sslmode="require", connect_timeout=30, autocommit=True,
+                                   **({"hostaddr": address} if address else {}))
         except psycopg.OperationalError:
             if attempt == 5:
                 raise
@@ -377,20 +452,23 @@ def create_database(pid, branch, name):
 def run_pg(tool, pid, branch, args, dbname=DB):
     """Run pg_dump or pg_restore against one database on a branch. The token goes in the environment, never on screen."""
     host, token = login(pid, branch)
-    env = dict(PG_ENV, PGHOST=host, PGPORT="5432", PGUSER=USER, PGPASSWORD=token,
+    env = dict(PG_ENV, PGHOST=host, PGPORT="5432", PGUSER=pg_user(pid), PGPASSWORD=token,
                PGDATABASE=dbname, PGSSLMODE="require")
+    address = public_address(pid, host)
+    if address:
+        env["PGHOSTADDR"] = address  # libpq still sends the hostname for TLS
     started = time.time()
     result = subprocess.run([str(PG_BIN / tool), *args], env=env, capture_output=True, text=True)
     return result.returncode, round(time.time() - started, 1), result.stderr.strip()
 
 
 def cli(*args, cwd=BUNDLE_DIR):
-    """Run the Databricks CLI as you. Its token comes from this notebook's sign-in and is never printed."""
-    auth = w.config.authenticate().get("Authorization", "")
+    """Run the Databricks CLI as you, against the new home's workspace. Its token is never printed."""
+    auth = w_new.config.authenticate().get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise RuntimeError("Couldn't get a token for the CLI from this notebook's sign-in")
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(CLI_DIR),
-           "DATABRICKS_HOST": w.config.host, "DATABRICKS_TOKEN": auth.split(" ", 1)[1]}
+           "DATABRICKS_HOST": w_new.config.host, "DATABRICKS_TOKEN": auth.split(" ", 1)[1]}
     result = subprocess.run([str(CLI), *args], env=env, cwd=cwd, capture_output=True, text=True)
     return result.returncode, (result.stdout + result.stderr).strip()
 
@@ -456,8 +534,8 @@ def migrate(pid, branch, up_to):
 
 
 print("Signed in as:", USER)
-print("Old home:", OLD_ID)
-print("New home:", NEW_ID)
+print("Old home:", OLD_ID, "in", w.config.host)
+print("New home:", NEW_ID, "in", w_new.config.host + (f" (another workspace, as {NEW_USER})" if TWO_WORKSPACES else ""))
 
 # COMMAND ----------
 
@@ -638,7 +716,7 @@ def wait_for_sync(pid, synced_name, pg_table, expected_rows, timeout=900):
     """Wait until the synced table is online and Postgres has every row."""
     started = time.time()
     while True:
-        status = w.postgres.get_synced_table(name=f"synced_tables/{synced_name}").status
+        status = client(pid).postgres.get_synced_table(name=f"synced_tables/{synced_name}").status
         state = str(status.detailed_state) if status else "unknown"
         try:
             rows = query(pid, "production", f"SELECT count(*) AS n FROM {pg_table}")["n"][0]
@@ -763,7 +841,7 @@ targets:
   new_home:
     default: true
     workspace:
-      host: {w.config.host}
+      host: {w_new.config.host}
 
 resources:
   postgres_projects:
@@ -838,7 +916,7 @@ show(query(NEW_ID, "production",
 # DBTITLE 1,Try to branch the new home from the old home's production
 """Ask for a branch in the new project whose parent is in the old project. It's expected to fail."""
 try:
-    w.postgres.create_branch(
+    client(NEW_ID).postgres.create_branch(
         parent=project_path(NEW_ID),
         branch=Branch(spec=BranchSpec(source_branch=branch_path(OLD_ID, "production"), no_expiry=True)),
         branch_id="copied-production",
@@ -1030,18 +1108,25 @@ print("✅ New production is an exact copy of old production, in every database.
 # MAGIC > **One name, one project.** A synced table's name can only point at one project per metastore, and two workspaces in the same region usually share one. So we delete the old sync first, during the write pause. Then we create the new one with the same name, so the app sees the same table. With separate metastores, like a move across regions or clouds, you could create the new sync before the pause.
 # MAGIC
 # MAGIC Same as before, the create call returns before the rows land, so we wait. Then we prove it's current: the Delta version it last synced should match the newest version in the Delta table's history.
+# MAGIC
+# MAGIC > Using a second workspace with its own metastore? Then this step is skipped: the source Delta table would have to be copied over first, and that's its own job.
 
 # COMMAND ----------
 
 # DBTITLE 1,Move the synced table to the new home
 """Delete the old project's sync, create the same synced table on new production, and prove it's current."""
-if DO_SYNCED_TABLES:
+NEW_SYNC = DO_SYNCED_TABLES
+if NEW_SYNC and TWO_WORKSPACES and w.metastores.current().metastore_id != w_new.metastores.current().metastore_id:
+    NEW_SYNC = False
+    print("Skipped: the new home's workspace has its own metastore, so the source Delta table would have to be\n"
+          "copied there first, which is a separate job. The old sync keeps running until cleanup.")
+elif NEW_SYNC:
     sync_started = time.time()
     w.postgres.delete_synced_table(name=f"synced_tables/{SYNCED_TABLE}").wait()
     print("Removed the old project's sync")
     for attempt in range(10):
         try:
-            w.postgres.create_synced_table(
+            client(NEW_ID).postgres.create_synced_table(
                 synced_table=SyncedTable(spec=SyncedTableSyncedTableSpec(
                     source_table_full_name=SOURCE_TABLE,
                     branch=branch_path(NEW_ID, "production"),
@@ -1058,7 +1143,7 @@ if DO_SYNCED_TABLES:
             time.sleep(20)
     state, rows, secs = wait_for_sync(NEW_ID, SYNCED_TABLE, f"{UC_SCHEMA}.product_catalog_synced", 50)
     SYNC_SECS = round(time.time() - sync_started)
-    synced_version = w.postgres.get_synced_table(
+    synced_version = client(NEW_ID).postgres.get_synced_table(
         name=f"synced_tables/{SYNCED_TABLE}").status.last_sync.delta_table_sync_info.delta_commit_version
     newest_version = spark.sql(f"DESCRIBE HISTORY {SOURCE_TABLE} LIMIT 1").first()["version"]
     print(f"New sync: {rows} rows after {secs} s. Synced Delta version {synced_version}, newest {newest_version}.")
@@ -1131,7 +1216,7 @@ checks = {
     "Sequences carried over": sequences_match,
     "Migration history carried over": query(NEW_ID, "production", "SELECT max(version) AS v FROM app.schema_migrations")["v"][0] == 3,
     "app_reader can read every table": bool(access_report(NEW_ID, "production", APP_DATABASES).app_reader_can_read.all()),
-    "Synced table current (or not used)": True if not DO_SYNCED_TABLES else bool(synced_version == newest_version),
+    "Synced table current (or not used)": True if not globals().get("NEW_SYNC") else bool(synced_version == newest_version),
     "App smoke test (write and read)": smoke_ok,
 }
 show(pd.DataFrame([(k, "✅" if v else "❌") for k, v in checks.items()], columns=["check", "result"]))
@@ -1151,6 +1236,9 @@ print("All checks passed. Safe to switch.")
 
 # DBTITLE 1,Point the app at the new home and place new orders
 """Show both hosts, place five orders on the new home, and report how long writes were paused."""
+if TWO_WORKSPACES:
+    print("Old workspace:", w.config.host)
+    print("New workspace:", w_new.config.host)
 print("Old host:", login(OLD_ID, "production")[0])
 print("New host:", login(NEW_ID, "production")[0])
 with connect(NEW_ID, "production") as conn:
@@ -1193,7 +1281,7 @@ show(query(NEW_ID, "development", "SELECT to_regclass('app.orders') IS NOT NULL 
 
 # DBTITLE 1,Delete the dev branch, then redeploy to recreate it
 """Delete the empty child, let the bundle recreate it from the restored production, and look at what it got."""
-w.postgres.delete_branch(name=branch_path(NEW_ID, "development"), purge=True).wait()
+client(NEW_ID).postgres.delete_branch(name=branch_path(NEW_ID, "development"), purge=True).wait()
 print("Deleted the empty development branch\n")
 rc, out = cli("bundle", "deploy")
 print(f"$ databricks bundle deploy\n{out}\n")
@@ -1297,7 +1385,7 @@ try:
 except NameError:
     raise RuntimeError("Run the restore cell in Module 4 first")
 
-w.postgres.create_branch(
+client(NEW_ID).postgres.create_branch(
     parent=project_path(NEW_ID),
     branch=Branch(spec=BranchSpec(source_branch=branch_path(NEW_ID, "production"),
                                   source_branch_time=Timestamp(seconds=int(RESTORE_STARTED.timestamp())),
@@ -1305,7 +1393,7 @@ w.postgres.create_branch(
     branch_id="before-the-move",
 ).wait()
 show(query(NEW_ID, "before-the-move", "SELECT to_regclass('app.orders') IS NOT NULL AS has_app_tables"))
-w.postgres.delete_branch(name=branch_path(NEW_ID, "before-the-move"), purge=True).wait()
+client(NEW_ID).postgres.delete_branch(name=branch_path(NEW_ID, "before-the-move"), purge=True).wait()
 print("(Deleted the before-the-move branch again.)")
 
 # COMMAND ----------
@@ -1324,7 +1412,7 @@ print("(Deleted the before-the-move branch again.)")
 try:
     for attempt in range(3):  # snapshot creation can fail once in a while; try again before giving up
         try:
-            w.postgres.create_snapshot(
+            client(OLD_ID).postgres.create_snapshot(
                 parent=project_path(OLD_ID),
                 snapshot=Snapshot(spec=SnapshotSpec(source_branch=branch_path(OLD_ID, "production"), ttl=Duration(seconds=86400))),
                 snapshot_id="before-the-move",
@@ -1337,7 +1425,7 @@ try:
     snapshot = f"{project_path(OLD_ID)}/snapshots/before-the-move"
     print("Created snapshot:", snapshot)
     try:
-        w.postgres.create_branch(
+        client(NEW_ID).postgres.create_branch(
             parent=project_path(NEW_ID),
             branch=Branch(spec=BranchSpec(source_snapshot=snapshot, no_expiry=True)),
             branch_id="from-old-snapshot",
@@ -1346,7 +1434,7 @@ try:
     except Exception as e:
         print("Rejected, as expected:")
         print("  ", str(e)[:300])
-    w.postgres.delete_snapshot(name=snapshot).wait()
+    client(OLD_ID).postgres.delete_snapshot(name=snapshot).wait()
 except Exception as e:
     print("Couldn't create a snapshot here, so skipping this demo:", str(e)[:200])
 
@@ -1434,7 +1522,7 @@ else:
 # MAGIC
 # MAGIC ### Step 2: Remove the guard and delete everything
 # MAGIC
-# MAGIC This cell takes `prevent_destroy` out of the bundle file, redeploys, and runs `bundle destroy` for real. The bundle sets `purge_on_delete`, so the project is deleted right away and its name is free for your next run. Then it deletes everything the bundle never owned: the old home, the synced table, the Unity Catalog schema, and the local files. It's destructive, so it only runs while `CONFIRM_TEARDOWN = True`.
+# MAGIC This cell takes `prevent_destroy` out of the bundle file, redeploys, and runs `bundle destroy` for real. The bundle sets `purge_on_delete`, so the project is deleted right away and its name is free for your next run. Then it deletes everything the bundle never owned: the old home, the synced table, the Unity Catalog schema, and the local files. With a second workspace, it cleans up both. It's destructive, so it only runs while `CONFIRM_TEARDOWN = True`.
 
 # COMMAND ----------
 
@@ -1458,7 +1546,7 @@ else:
             print(f"\n$ databricks {' '.join(args)}   (exit code {rc})\n{out}")
     for pid in (NEW_ID, OLD_ID):  # the old home was never in the bundle
         if project_exists(pid):
-            w.postgres.delete_project(name=project_path(pid), purge=True).wait()
+            client(pid).postgres.delete_project(name=project_path(pid), purge=True).wait()
             print("\nDeleted project", pid)
     try:
         spark.sql(f"DROP SCHEMA IF EXISTS {CATALOG}.{UC_SCHEMA} CASCADE")  # only this lab's own schema
@@ -1469,7 +1557,7 @@ else:
         else:
             print("Couldn't drop the lab schema:", str(e)[:120])
     try:
-        w.workspace.delete(BUNDLE_ROOT, recursive=True)  # only this lab's bundle folder
+        w_new.workspace.delete(BUNDLE_ROOT, recursive=True)  # only this lab's bundle folder
     except Exception:
         pass
     for folder in (WORK_DIR, BUNDLE_DIR):

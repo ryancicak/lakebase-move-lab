@@ -14,6 +14,8 @@ Match the error text or symptom, then give the cause and the fix. Everything her
 | The CLI download cell fails | Serverless can't reach github.com. | Allow HTTPS to github.com. |
 | `'WorkspaceClient' object has no attribute 'postgres'`, or the preflight says the SDK is older than 0.81 | An older Databricks SDK is loaded. | Run the `%pip` cell, then the restart cell, before the rest. |
 | `Couldn't get a token for the CLI from this notebook's sign-in` | The notebook's sign-in didn't hand over a bearer token. | Run the notebook as yourself on serverless compute. Not seen in testing. |
+| `ValueError: Secret scope <name> needs 'host', plus 'token' or 'client-id' and 'client-secret'` | Two-workspace mode is on, but the scope is missing those secrets, or the user can't read it. | Add `host` (the other workspace's URL) and `token` (a personal access token created there), or `client-id` and `client-secret` for a service principal. The user needs READ on the scope. Not seen in testing. |
+| The other workspace's URL shows as `[REDACTED]` | Databricks hides output that matches a secret value, and the URL comes from the scope. | Expected in two-workspace mode. |
 
 ## Lab steps
 
@@ -35,6 +37,9 @@ Match the error text or symptom, then give the cause and the fix. Everything her
 | Module 3's deploy fails because the new project already exists, or the lab reuses an old project | Leftovers from an earlier run that didn't reach Module 7. | Run Module 7 in a session with the same names, or run the preflight with `CLEAN_LEFTOVERS = True`. |
 | `pg_restore exit code: 1` with `duplicate key value violates unique constraint "coupons_pkey"` in the optional cell | Expected. A data-only dump of the whole dev branch includes production's rows too. | Nothing; that's the lesson. Nothing changed, thanks to `--single-transaction`. |
 | Module 7, Step 1: `exit code 1` with `has lifecycle.prevent_destroy set` | Expected. The guard refuses the destroy. | Step 2 removes the guard and destroys for real. |
+| `FATAL: External authorization failed. DETAIL: This could be due to paused instances, disabling readable secondaries, IP ACLs or private link configuration` connecting to the new home in another workspace, at an address like `192.168.x.x` | On serverless, every Lakebase hostname resolves to a Databricks proxy, and the proxy refused the other workspace's compute (seen from an AWS workspace to an Azure one). | The lab's two-workspace mode connects to the compute's public address, so you'd see this in your own code on serverless, not in the lab. Look up the public IP in public DNS and pass it as libpq's `hostaddr` (`PGHOSTADDR` for `pg_dump` and `pg_restore`), keeping the hostname in `host`. Or run the tools outside serverless. |
+| `Couldn't look up <host> in public DNS (dns.google or cloudflare-dns.com)` | Two-workspace mode can't reach public DNS from this compute. | Allow HTTPS to dns.google or cloudflare-dns.com in the serverless network policy. Not seen in testing. |
+| `Skipped: the new home's workspace has its own metastore, ...` in the synced-table swap | Two-workspace mode, and the workspaces have separate metastores, so the source Delta table isn't there. | Expected. In a real move, copy the source Delta table over first, then create the sync on the new side. |
 
 ## The preflight and its Genie Code cell
 
@@ -45,6 +50,9 @@ Match the error text or symptom, then give the cause and the fix. Everything her
 | ⏭️ `skipped: needs ...` | A check it depends on failed. | Fix that check first. |
 | ❌ `Bundle deploys a Lakebase project` | No permission to create Lakebase projects, or the home folder isn't writable (bundles keep state in `~/.bundle`). | The error names the permission; ask a workspace admin. |
 | ❌ `Connect with a login token` | A timeout points at the serverless network policy; an authentication error is something else. | Network policy: ask the admin. Otherwise send the error to the lab's owner. |
+| ❌ `Second workspace: sign-in` | The **new_workspace_secrets** scope is missing `host` or the credentials, the user can't read it, or the credentials don't work there. | Fix the scope's secrets; the detail says which. |
+| ❌ `Second workspace: connect from here` | This compute can't reach the other workspace's compute at its public address, or public DNS. | Usually the serverless network policy. Ask the admin. |
+| ⚠️ `Second workspace: synced tables` | The two workspaces have separate metastores. | Expected for workspaces in different regions or clouds; the lab skips the synced table on the new side. |
 | `The preflight stopped before it finished: ...` from the Genie Code cell | The preflight job failed before its last cell, usually at the `%pip` cell. | Open the job run link it prints. |
 | The Genie Code cell fails on `runs/submit` with a permission error | The user can't submit one-time job runs, or serverless jobs aren't enabled. | Open `lakebase_move_lab_preflight` and click Run all instead. |
 | The Genie Code cell's job can't fetch the notebook from GitHub | The workspace blocks GitHub as a Git source. | Put `lakebase_move_lab_preflight` in the same folder as the notebook you're asking from; the cell uses a copy next to it first. |

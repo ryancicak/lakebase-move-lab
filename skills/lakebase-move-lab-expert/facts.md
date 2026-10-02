@@ -70,6 +70,15 @@ Tags: **[lab]** tested in the lab (October 1 and 2, 2026); **[runs]** tested in 
 - Passed as a service principal in jobs and as a workspace user in an interactive Run all. [lab]
 - Expected data: 1,000 customers, 5,000 orders plus 25 before the pause (watermark 5025), 3 migrations on production, 200 rows in `reporting`, 50 synced rows; new orders 5026 to 5030 after the switch. [lab]
 
+## Two workspaces (the lab's optional mode)
+
+- From an AWS workspace (us-west-2) to an Azure workspace (eastus2), as a serverless job on environment version 5, October 2, 2026: all 79 cells passed. The restores exited 0 in about 5 seconds across clouds, every database matched exactly, the gate passed 7 of 7, writes were paused 46 seconds (no synced-table swap), and the teardown cleaned up both workspaces. [lab]
+- On serverless, every Lakebase hostname resolved to the same private Databricks proxy address, for this workspace's computes and the other workspace's. The proxy refused the other workspace's compute: `FATAL: External authorization failed`. Connecting to that compute's public IP from public DNS (libpq `hostaddr`) worked. [lab] The live-app runs never hit this, because they ran `pg_dump` and `pg_restore` outside Databricks. [runs] Same-cloud and same-region pairs of workspaces weren't tested. [not tested]
+- Across workspaces, the cross-project branch and the cross-project snapshot were rejected with the same errors as inside one workspace. [lab]
+- The notebook's bundle deploy, redeploy, and destroy ran against the other workspace, with the CLI signed in through the secret scope's token. [lab]
+- The two workspaces had separate metastores, so the lab skipped the synced table on the new side. Moving a synced table between two workspaces that share a metastore wasn't tested. [lab] [not tested]
+- The preflight with a second workspace: 25 checks passed and 1 warning (separate metastores), and its cleanup ran in both workspaces. [lab]
+
 ## Not tested
 
 - Large volumes (the runs moved about 200,000 rows, 2.3 MB compressed) and parallel restore.

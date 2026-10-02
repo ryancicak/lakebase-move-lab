@@ -21,6 +21,7 @@
 # MAGIC * **Synced tables:** you can create a schema in the lab's catalog and sync a Delta table into Lakebase.
 # MAGIC * **Cleanup:** `prevent_destroy` guards the bundle, and everything this check creates gets deleted.
 # MAGIC * **Leftovers:** nothing from an earlier lab run is still around.
+# MAGIC * **A second workspace (optional):** if you'll put the lab's new home in another workspace, it checks that one too.
 # MAGIC
 # MAGIC It creates one small throwaway project, `lb-move-pre-…`, and deletes it at the end. Run it the way you'll run the lab: on serverless, as yourself. The last cell gives you the verdict: ✅ ready, ⚠️ ready with notes, or ❌ fix these first.
 # MAGIC
@@ -46,7 +47,7 @@ dbutils.library.restartPython()
 # MAGIC %md
 # MAGIC ### Settings and how checks are recorded
 # MAGIC
-# MAGIC Set **catalog** (the widget at the top) to the catalog you'll use for the lab's synced table. The lab's default is `main`. Each check records one of four results, with a fix when it isn't a pass:
+# MAGIC Set **catalog** (the widget at the top) to the catalog you'll use for the lab's synced table. The lab's default is `main`. Putting the lab's new home in another workspace? Set **new_workspace_secrets** to the same secret scope you'll give the lab. Each check records one of four results, with a fix when it isn't a pass:
 # MAGIC
 # MAGIC * ✅ **pass**
 # MAGIC * ⚠️ **warning**: the lab still runs, minus a step
@@ -75,7 +76,9 @@ from pathlib import Path
 import pandas as pd
 
 dbutils.widgets.text("catalog", "main", "Catalog for the lab's synced table")
+dbutils.widgets.text("new_workspace_secrets", "", "Secret scope for a second workspace (optional)")
 CATALOG = dbutils.widgets.get("catalog").strip() or "main"
+NEW_SCOPE = dbutils.widgets.get("new_workspace_secrets").strip()  # the lab's NEW_WORKSPACE_SECRETS, if you use it
 CLEAN_LEFTOVERS = False  # True deletes what an earlier lab run left behind (its projects, schema, and bundle folder)
 
 PG_VERSION = 17  # the lab's Postgres version
@@ -131,6 +134,7 @@ def stale(name):
 
 
 print("Catalog for the synced-table check:", CATALOG)
+print("Second workspace:", f"from secret scope {NEW_SCOPE}" if NEW_SCOPE else "none (the lab's default)")
 
 # COMMAND ----------
 
@@ -246,13 +250,14 @@ def _():
     return subprocess.run([str(CLI), "--version"], capture_output=True, text=True, check=True).stdout.strip()
 
 
-def cli(*args, cwd=None):
-    """Run the Databricks CLI as you. Its token comes from this notebook's sign-in and is never printed."""
-    auth = w.config.authenticate().get("Authorization", "")
+def cli(*args, cwd=None, ws=None):
+    """Run the Databricks CLI as you, in this workspace or the one ws signs in to. Its token is never printed."""
+    ws = ws or w
+    auth = ws.config.authenticate().get("Authorization", "")
     if not auth.startswith("Bearer "):
         raise RuntimeError("couldn't get a token for the CLI from this notebook's sign-in")
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(CLI_DIR),
-           "DATABRICKS_HOST": w.config.host, "DATABRICKS_TOKEN": auth.split(" ", 1)[1]}
+           "DATABRICKS_HOST": ws.config.host, "DATABRICKS_TOKEN": auth.split(" ", 1)[1]}
     result = subprocess.run([str(CLI), *args], env=env, cwd=cwd, capture_output=True, text=True)
     return result.returncode, (result.stdout + result.stderr).strip()
 
@@ -282,13 +287,13 @@ def _():
 SDK_OK = SDK_CHECK in PASSED
 
 
-def project_exists(pid):
-    return any(p.name == f"projects/{pid}" for p in w.postgres.list_projects())
+def project_exists(pid, ws=None):
+    return any(p.name == f"projects/{pid}" for p in (ws or w).postgres.list_projects())
 
 
-def folder_exists(path):
+def folder_exists(path, ws=None):
     try:
-        w.workspace.get_status(path)
+        (ws or w).workspace.get_status(path)
         return True
     except Exception:
         return False
@@ -392,17 +397,17 @@ if SDK_OK:
         pass  # no bundle folder yet
 
 
-def write_bundle(guard=True):
+def write_bundle(guard=True, ws=None, folder=None):
     """The lab's bundle shape, for the throwaway project. guard=True adds lifecycle.prevent_destroy."""
     lifecycle = "\n      lifecycle: { prevent_destroy: true }" if guard else ""
-    (BUNDLE_DIR / "databricks.yml").write_text(f"""bundle:
+    (folder or BUNDLE_DIR).joinpath("databricks.yml").write_text(f"""bundle:
   name: {PRE_BUNDLE}
 
 targets:
   preflight:
     default: true
     workspace:
-      host: {w.config.host}
+      host: {(ws or w).config.host}
 
 resources:
   postgres_projects:
@@ -432,17 +437,18 @@ resources:
 """)
 
 
-def endpoint_of(branch, timeout=300):
+def endpoint_of(branch, timeout=300, ws=None):
     """Find the branch's compute and wait until it has a host. Creates one if none shows up (the lab's helper)."""
+    ws = ws or w
     parent = f"projects/{PRE_ID}/branches/{branch}"
     started, created = time.time(), False
     while True:
-        endpoints = list(w.postgres.list_endpoints(parent=parent))
+        endpoints = list(ws.postgres.list_endpoints(parent=parent))
         for ep in endpoints:
             if ep.status and ep.status.hosts and ep.status.hosts.host:
                 return ep.name, ep.status.hosts.host
         if not endpoints and not created and time.time() - started > 60:
-            w.postgres.create_endpoint(
+            ws.postgres.create_endpoint(
                 parent=parent,
                 endpoint=Endpoint(spec=EndpointSpec(endpoint_type=EndpointType.ENDPOINT_TYPE_READ_WRITE,
                                                     autoscaling_limit_min_cu=0.5, autoscaling_limit_max_cu=2.0)),
@@ -454,25 +460,51 @@ def endpoint_of(branch, timeout=300):
         time.sleep(5)
 
 
-def connect(branch, dbname=DB):
-    """Open a Postgres connection with a fresh login token. Retries while the compute wakes up."""
-    endpoint, host = endpoint_of(branch)
-    token = w.postgres.generate_database_credential(endpoint=endpoint).token
+def public_address(host):
+    """A compute's public IP, from public DNS (the lab's way to reach computes in another workspace).
+
+    On serverless, every Lakebase hostname resolves to a Databricks proxy, and in testing that proxy refused
+    another workspace's computes.
+    """
+    for url in (f"https://dns.google/resolve?name={host}&type=A",
+                f"https://cloudflare-dns.com/dns-query?name={host}&type=A"):
+        try:
+            request = urllib.request.Request(url, headers={"accept": "application/dns-json"})
+            answers = json.load(urllib.request.urlopen(request, timeout=15)).get("Answer", [])
+            addresses = [a["data"] for a in answers if a.get("type") == 1]
+            if addresses:
+                return addresses[0]
+        except Exception:
+            pass
+    raise RuntimeError(f"couldn't look up {host} in public DNS (dns.google or cloudflare-dns.com)")
+
+
+def connect(branch, dbname=DB, ws=None):
+    """Open a Postgres connection with a fresh login token. Retries while the compute wakes up.
+
+    ws is the other workspace's sign-in, for its computes; they're reached at their public address, as in the lab.
+    """
+    endpoint, host = endpoint_of(branch, ws=ws)
+    token = (ws or w).postgres.generate_database_credential(endpoint=endpoint).token
+    extra = {"hostaddr": public_address(host)} if ws else {}
     for attempt in range(6):
         try:
-            return psycopg.connect(host=host, dbname=dbname, user=USER, password=token,
-                                   sslmode="require", connect_timeout=30, autocommit=True)
+            return psycopg.connect(host=host, dbname=dbname, user=NEW_USER if ws else USER, password=token,
+                                   sslmode="require", connect_timeout=30, autocommit=True, **extra)
         except psycopg.OperationalError:
             if attempt == 5:
                 raise
             time.sleep(10)
 
 
-def run_pg(tool, branch, args, dbname=DB):
+def run_pg(tool, branch, args, dbname=DB, ws=None):
     """Run pg_dump or pg_restore against one database. The token goes in the environment, never on screen."""
-    endpoint, host = endpoint_of(branch)
-    token = w.postgres.generate_database_credential(endpoint=endpoint).token
-    env = dict(PG_ENV, PGHOST=host, PGPORT="5432", PGUSER=USER, PGPASSWORD=token, PGDATABASE=dbname, PGSSLMODE="require")
+    endpoint, host = endpoint_of(branch, ws=ws)
+    token = (ws or w).postgres.generate_database_credential(endpoint=endpoint).token
+    env = dict(PG_ENV, PGHOST=host, PGPORT="5432", PGUSER=NEW_USER if ws else USER, PGPASSWORD=token,
+               PGDATABASE=dbname, PGSSLMODE="require")
+    if ws:
+        env["PGHOSTADDR"] = public_address(host)  # libpq still sends the hostname for TLS
     result = subprocess.run([str(PG_BIN / tool), *args], env=env, capture_output=True, text=True)
     return result.returncode, result.stderr.strip()
 
@@ -624,6 +656,131 @@ def _():
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ### Second workspace (optional)
+# MAGIC
+# MAGIC Only if you'll use the lab's `NEW_WORKSPACE_SECRETS`: set **new_workspace_secrets** (the widget at the top) to the same secret scope. Then this checks the other workspace the way the lab uses it:
+# MAGIC
+# MAGIC * signs in there with the scope's address and credentials;
+# MAGIC * looks for an earlier lab run's leftovers there;
+# MAGIC * deploys the same throwaway project there with a bundle;
+# MAGIC * connects to it from here, and restores this workspace's dump into it;
+# MAGIC * tells you whether the synced table can move (it can't if the other workspace has its own metastore).
+# MAGIC
+# MAGIC With the widget empty, this section does nothing.
+
+# COMMAND ----------
+
+# DBTITLE 1,Second workspace: sign-in, leftovers, bundle, connection, and a restore from here
+"""Only with new_workspace_secrets set: try the other workspace the way the lab's two-workspace mode uses it."""
+NEW_SIGN_IN, NEW_BUNDLE = "Second workspace: sign-in", "Second workspace: bundle deploys a Lakebase project"
+NEW_CONNECT = "Second workspace: connect from here"
+BUNDLE_DIR_NEW = Path(tempfile.mkdtemp(prefix="lb_pre_bundle_new_"))
+w_new = None
+
+if not NEW_SCOPE:
+    print("No second workspace set, so there's nothing to check here.")
+else:
+    @check(NEW_SIGN_IN,
+           f"Put the other workspace's URL in secret scope {NEW_SCOPE} as 'host', plus 'token' (a personal access token "
+           "you created there), or 'client-id' and 'client-secret' for a service principal. You need READ on the scope.",
+           needs=("Python packages (PyPI)",))
+    def _():
+        global w_new, NEW_USER
+        from databricks.sdk import WorkspaceClient
+
+        def secret(key):
+            try:
+                return dbutils.secrets.get(NEW_SCOPE, key)
+            except Exception:
+                return None
+
+        host, token, client_id = secret("host"), secret("token"), secret("client-id")
+        if not host or not (token or client_id):
+            raise RuntimeError(f"secret scope {NEW_SCOPE} needs 'host', plus 'token' or 'client-id' and 'client-secret'")
+        if client_id:
+            ws = WorkspaceClient(host=host, client_id=client_id, client_secret=secret("client-secret"),
+                                 auth_type="oauth-m2m")
+        else:
+            ws = WorkspaceClient(host=host, token=token, auth_type="pat")
+        NEW_USER = ws.current_user.me().user_name
+        visible = sum(1 for _ in ws.postgres.list_projects())
+        w_new = ws
+        return f"signed in to {host} as {NEW_USER}; the Lakebase API answered ({visible} project(s) visible to you)"
+
+    @check("Second workspace: no leftovers from an earlier lab run",
+           "Run the lab's Module 7 (clean up), or set CLEAN_LEFTOVERS = True in this notebook's settings cell and run "
+           "the check again.",
+           needs=(NEW_SIGN_IN, SDK_CHECK))
+    def _():
+        lab_new, lab_root = f"lb-move-new-{slug}-{me.id}", f"/Workspace/Users/{NEW_USER}/.bundle/lb-move-lab"
+        found = [f"project {lab_new}"] if project_exists(lab_new, w_new) else []
+        found += [f"bundle folder {lab_root}"] if folder_exists(lab_root, w_new) else []
+        if not found:
+            return "nothing found"
+        if not CLEAN_LEFTOVERS:
+            raise RuntimeError("found " + ", ".join(found) + " in the second workspace, from an earlier (or still "
+                               "running) lab run. The lab would trip over them instead of starting clean.")
+        if project_exists(lab_new, w_new):
+            w_new.postgres.delete_project(name=f"projects/{lab_new}", purge=True).wait()
+        if folder_exists(lab_root, w_new):
+            w_new.workspace.delete(lab_root, recursive=True)
+        return "deleted " + ", ".join(found)
+
+    @check(NEW_BUNDLE,
+           "You need permission to create Lakebase projects in the second workspace, and your home folder there has to "
+           "be writable (bundles keep their state in ~/.bundle). The error says which.",
+           needs=(NEW_SIGN_IN, "Databricks CLI (github.com)", SDK_CHECK))
+    def _():
+        for p in w_new.postgres.list_projects():  # an earlier preflight's throwaway projects there, if over 30 minutes old
+            pid = p.name.split("/", 1)[1]
+            if pid.startswith(PRE_PREFIX) and stale(pid):
+                try:
+                    w_new.postgres.delete_project(name=p.name, purge=True).wait()
+                except Exception:
+                    pass  # another run got to it first
+        write_bundle(guard=False, ws=w_new, folder=BUNDLE_DIR_NEW)
+        for args in (["bundle", "validate"], ["bundle", "deploy"]):
+            rc, out = cli(*args, cwd=BUNDLE_DIR_NEW, ws=w_new)
+            if rc:
+                raise RuntimeError(f"databricks {' '.join(args)}: {tail(out)}")
+        return f"{PRE_ID} deployed in the second workspace"
+
+    @check(NEW_CONNECT,
+           "This notebook has to reach the other workspace's computes at their public address on port 5432, and look "
+           "them up in public DNS (dns.google or cloudflare-dns.com). A timeout points at the serverless network policy.",
+           needs=(NEW_BUNDLE, "psycopg on the downloaded libpq"))
+    def _():
+        with connect("production", ws=w_new) as conn:
+            user, version = conn.execute("SELECT current_user, current_setting('server_version')").fetchone()
+        return f"connected as {user}, Postgres {version}, at the compute's public address"
+
+    @check("Second workspace: restore a dump from this workspace",
+           "This is the move itself, across workspaces. Send the error to the lab's owner.",
+           needs=(NEW_CONNECT, "pg_dump and a filtered pg_restore"))
+    def _():
+        rc, err = run_pg("pg_restore", "production",
+                         ["--no-owner", "--no-acl", "--single-transaction", "--exit-on-error",
+                          "-L", str(WORK_DIR / "preflight.toc"), "-d", DB, str(WORK_DIR / "preflight.dump")], ws=w_new)
+        if rc:
+            raise RuntimeError("pg_restore: " + tail(err))
+        with connect("production", ws=w_new) as conn:
+            rows = conn.execute("SELECT count(*) FROM app.items").fetchone()[0]
+        if rows != 100:
+            raise RuntimeError(f"expected 100 rows in the second workspace, found {rows}")
+        return "restored this workspace's filtered dump there: all 100 rows"
+
+    @check("Second workspace: synced tables",
+           "Only a warning: the lab skips the synced table on the new side when the other workspace has its own "
+           "metastore. In a real move, copy the source Delta table over first, then create the sync there.",
+           needs=(NEW_SIGN_IN, SDK_CHECK))
+    def _():
+        if w.metastores.current().metastore_id != w_new.metastores.current().metastore_id:
+            raise Warn("the other workspace has its own metastore, so the lab will skip the synced table on the new side")
+        return "both workspaces share a metastore, so the lab can move the synced table"
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ### Synced tables
 # MAGIC
 # MAGIC The lab syncs a small Delta table into Lakebase, and that needs a catalog where you can create a schema and a table. If you can't, the lab still runs and just skips its synced-table steps. That's why these two checks are warnings, not failures.
@@ -756,14 +913,29 @@ def _():
             problems.append(f"schema: {str(e)[:120]}")
     if folder_exists(PRE_BUNDLE_ROOT):
         w.workspace.delete(PRE_BUNDLE_ROOT, recursive=True)
-    for folder in (WORK_DIR, BUNDLE_DIR):
+    left = []
+    if w_new is not None:  # the second workspace, if this run used one
+        new_root = f"/Workspace/Users/{NEW_USER}/.bundle/{PRE_BUNDLE}"
+        if NEW_BUNDLE in PASSED:
+            rc, out = cli("bundle", "destroy", "--auto-approve", cwd=BUNDLE_DIR_NEW, ws=w_new)
+            if rc:
+                problems.append(f"second workspace, databricks bundle destroy: {tail(out, 2)}")
+        if project_exists(PRE_ID, w_new):
+            w_new.postgres.delete_project(name=f"projects/{PRE_ID}", purge=True).wait()
+        if folder_exists(new_root, w_new):
+            w_new.workspace.delete(new_root, recursive=True)
+        left += [name for name, there in ((f"project {PRE_ID} in the second workspace", project_exists(PRE_ID, w_new)),
+                                          (f"folder {new_root} in the second workspace", folder_exists(new_root, w_new)))
+                 if there]
+    for folder in (WORK_DIR, BUNDLE_DIR, BUNDLE_DIR_NEW):
         shutil.rmtree(folder, ignore_errors=True)
-    left = [name for name, there in ((f"project {PRE_ID}", project_exists(PRE_ID)),
-                                     (f"schema {PRE_SCHEMA}", schema_exists(PRE_SCHEMA)),
-                                     (f"folder {PRE_BUNDLE_ROOT}", folder_exists(PRE_BUNDLE_ROOT))) if there]
+    left += [name for name, there in ((f"project {PRE_ID}", project_exists(PRE_ID)),
+                                      (f"schema {PRE_SCHEMA}", schema_exists(PRE_SCHEMA)),
+                                      (f"folder {PRE_BUNDLE_ROOT}", folder_exists(PRE_BUNDLE_ROOT))) if there]
     if left:
         raise RuntimeError("still there: " + ", ".join(left) + ("; " + "; ".join(problems) if problems else ""))
-    return "deleted the throwaway project, synced table, schema, and bundle folder"
+    return "deleted the throwaway project, synced table, schema, and bundle folder" + (
+        ", in both workspaces" if w_new is not None else "")
 
 # COMMAND ----------
 
@@ -787,4 +959,5 @@ print({
     "ready with notes": "⚠️ Ready for the lab, with the notes above.",
     "not ready": f"❌ Not ready: fix the {len(fails)} item(s) marked ❌, then run this check again.",
 }[VERDICT])
-dbutils.notebook.exit(json.dumps({"verdict": VERDICT, "user": globals().get("USER"), "catalog": CATALOG, "results": RESULTS}))
+dbutils.notebook.exit(json.dumps({"verdict": VERDICT, "user": globals().get("USER"), "catalog": CATALOG,
+                                  "new_workspace_secrets": NEW_SCOPE or None, "results": RESULTS}))

@@ -106,6 +106,11 @@ None of this comes with the dump. Set it up on the new production after the rest
 
 **CI** (tested): `CAN_MANAGE` on the project (it runs `bundle deploy`); a Postgres role created with `databricks postgres create-role`, whose `--role-id` must start with a lowercase letter, so a client ID that starts with a digit can't be used as the ID; and bundle state where only CI and admins can write, like CI's own home folder (`workspace.root_path`), not `/Workspace/Shared`, which gives all users Can Manage. Make CI migrate as the owner role, for example `flyway -initSql="SET ROLE app_owner" migrate` (Flyway 13.4 warns `initSql` is deprecated but runs it). Secretless GitHub sign-in needs an account admin for the federation policy, and a workspace IP access list blocked GitHub-hosted runners, so the runs used a self-hosted runner.
 
+## Where to run pg_dump and pg_restore
+
+- Anywhere that can reach both projects' computes and sign in to both workspaces. The live-app runs used a laptop and CI runners (tested).
+- From a Databricks notebook on serverless, another workspace's computes were refused by name. Every Lakebase hostname resolved to a Databricks proxy, which answered `FATAL: External authorization failed` for an Azure compute when the notebook ran in an AWS workspace. Connecting to the compute's public address worked: look it up in public DNS and pass it as libpq's `hostaddr` (`PGHOSTADDR` for the tools), keeping the hostname in `host` for TLS (tested). The lab's two-workspace mode does exactly that. Other pairs, like two workspaces in the same cloud or region, weren't tested.
+
 ## Tokens and long dumps
 
 - A Lakebase OAuth token is good for an hour, and it's checked only when a connection opens. An open session kept working after its token expired; a new connection with the expired token was refused (tested). The minimum credential lifetime is 300 seconds.

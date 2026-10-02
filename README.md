@@ -52,7 +52,24 @@ The lab is one notebook on purpose. There's nothing else to keep next to it, so 
 6. **Doing it for real:** a checklist for a real move.
 7. **Clean up:** watch `prevent_destroy` refuse a `bundle destroy`, then remove the guard and delete everything.
 
-Two projects in one workspace stand in for two workspaces. A branch can't leave its project, even inside one workspace, so it's the same job.
+Two projects in one workspace stand in for two workspaces. A branch can't leave its project, even inside one workspace, so it's the same job. Have a second workspace? The new home can live there instead (next section).
+
+## Optional: use a real second workspace
+
+By default, both homes live in the workspace you run the lab in. To put the new home in another workspace, give the lab that workspace's address and your credentials there, in a secret scope:
+
+```bash
+databricks secrets create-scope lb-move-lab                  # in the workspace where you'll run the lab
+databricks secrets put-secret lb-move-lab host --string-value https://<other-workspace-url>
+databricks secrets put-secret lb-move-lab token              # paste a personal access token you created in the other workspace
+```
+
+A service principal works too: put `client-id` and `client-secret` in the scope instead of `token`. Then, in the lab's Module 0 helpers cell, set `NEW_WORKSPACE_SECRETS = "lb-move-lab"`. Everything else runs the same, with two differences:
+
+- **The lab reaches the other workspace's computes at their public address.** On serverless, every Lakebase hostname resolves to a Databricks proxy, and in testing that proxy refused the other workspace's computes. So the lab looks up their public address in public DNS (dns.google, or cloudflare-dns.com as a fallback) and connects to that.
+- **With separate metastores, the synced table stays behind.** Its Delta source would have to be copied to the other workspace first, which is its own job, so the lab skips that step and says so.
+
+Databricks hides anything that matches a secret, so the other workspace's URL shows up as `[REDACTED]` in the output. To check it all first, run the preflight with its **new_workspace_secrets** widget set to the same scope.
 
 ## Before the lab: run the preflight
 
@@ -64,11 +81,12 @@ The preflight, `lakebase_move_lab_preflight`, tries everything the lab needs, th
 - a second database, roles and grants, and `pg_dump` with a filtered `pg_restore`;
 - point-in-time branches, snapshots, and a synced table;
 - `prevent_destroy` and cleanup;
-- leftovers from an earlier run.
+- leftovers from an earlier run;
+- optionally, a second workspace: sign-in, a bundle deploy, a connection from here, and a restore of this workspace's dump into it.
 
-It takes about 3 minutes, uses one throwaway project, `lb-move-pre-<you>-<id>-<timestamp>`, and deletes it. There are three ways to run it:
+It takes about 3 minutes, uses one throwaway project, `lb-move-pre-<you>-<id>-<timestamp>` (one in each workspace, if you use two), and deletes it. There are three ways to run it:
 
-1. **Run the notebook.** Open `lakebase_move_lab_preflight`, set the **catalog** widget to the catalog you'll use in the lab, attach serverless compute, and click Run all. The last cell says ✅ ready, ⚠️ ready with notes, or ❌ not ready, with a fix for each problem.
+1. **Run the notebook.** Open `lakebase_move_lab_preflight`, set the **catalog** widget to the catalog you'll use in the lab (and **new_workspace_secrets**, if you'll use a second workspace), attach serverless compute, and click Run all. The last cell says ✅ ready, ⚠️ ready with notes, or ❌ not ready, with a fix for each problem.
 2. **Ask Genie Code.** Add the skills once (below), open Genie Code in any notebook, and ask: *"Check that this workspace is ready for the Lakebase Move Lab."* Genie Code adds one cell that runs the preflight as a one-time serverless job, then explains the results and the fixes. It asks before running code, unless you've set Genie Code to auto-approve.
 3. **Paste one cell.** The cell in [`skills/lakebase-move-lab-preflight/SKILL.md`](skills/lakebase-move-lab-preflight/SKILL.md) runs the preflight from any notebook and prints the results. It uses a copy of the preflight next to your notebook if there is one, and otherwise runs it straight from this repo.
 
@@ -134,6 +152,7 @@ October 1 and 2, 2026, in an AWS us-west-2 workspace:
   - an interactive **Run all** by a workspace user, in a notebook freshly imported from this repo's URL.
 
   Each run took about 4 minutes, every check passed, and the teardown left nothing behind.
+- **The lab with a real second workspace,** from an AWS workspace to an Azure workspace, as a serverless job: all 79 cells passed, both databases restored with exit code 0 across clouds, the gate passed 7 of 7, writes were paused for 46 seconds, and the teardown cleaned up both workspaces. The synced-table step skipped, as designed, because the two workspaces have separate metastores. The first try failed at the first Postgres connection: serverless sent the Azure compute's hostname to a Databricks proxy, which answered `FATAL: External authorization failed`. Connecting to the compute's public address worked, and that's what the lab does now.
 - **The preflight:**
   - ✅ on environment versions 1 through 5;
   - ⚠️ with a catalog that doesn't exist, and for a user without `CREATE SCHEMA` on `main`;
