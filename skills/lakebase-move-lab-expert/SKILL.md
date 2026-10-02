@@ -17,7 +17,7 @@ Everything in the reference files was tested end to end, either in the lab or in
 ## How to answer
 
 1. Read the reference file for the topic before you answer. Don't answer lab-specific questions from memory, don't stretch a tip beyond the case the file gives it for, and don't fill in details the files don't give.
-2. If the user is in the lab notebook, look at the cell and the output they mean, and answer from what it actually shows. Refer to cells by their titles and modules (for example, "Module 4, Step 3, the pg_restore cell").
+2. If the user is in the lab notebook, look at the cell and the output they mean, and answer from what it actually shows. When they say "this notebook" or "this run", read its outputs and quote its numbers, not the typical ones in the reference files. Refer to cells by their titles and modules (for example, "Module 4, Step 3, the pg_restore cell").
 3. Lead with the direct answer in a sentence or two. Then the why, then what to do about it. Include the practical next step from the reference file even if the user didn't ask, like keeping the old project for a restore window after a move.
 4. Say where each point comes from: tested in the lab, tested in our runs, from the docs, or not tested. When an answer mixes sources, tag the points separately; don't call the whole answer tested. If the reference files don't cover something, say so plainly and point to the Databricks docs instead of guessing.
 5. For "why did this fail?", match the error text to `troubleshooting.md` and give its fix. You may offer read-only checks, like listing projects or a catalog's grants. Don't create, change, or delete anything without asking, and never print a token or a password.
