@@ -36,7 +36,7 @@ The lab lives in one notebook on purpose. There are no helper modules or SQL fil
 - `prevent_destroy` and cleanup;
 - leftovers from an earlier run.
 
-It takes about 3 minutes and uses one throwaway project, `lb-move-pre-<you>-<id>`, which it deletes. There are three ways to run it:
+It takes about 3 minutes and uses one throwaway project, `lb-move-pre-<you>-<id>-<timestamp>`, which it deletes. There are three ways to run it:
 
 1. **Run the notebook.** Open `lakebase_move_lab_preflight`, set the **catalog** widget to the catalog you'll use in the lab, attach serverless compute, and click Run all. The last cell prints ✅ ready, ⚠️ ready with notes, or ❌ not ready, with a fix for each problem.
 2. **Ask Genie Code.** Add the skill once (below), then open Genie Code in any notebook and ask: *"Check that this workspace is ready for the Lakebase Move Lab."* After you approve its steps, Genie Code runs the preflight as a one-time serverless job, then explains the results and the fixes.
@@ -84,7 +84,7 @@ Two projects in one workspace stand in for two workspaces. A branch can't leave 
 
 Module 7 deletes all of it. The bundle sets `purge_on_delete`, and the old project is deleted with `purge=True`, so the project names are free right away.
 
-The preflight creates the project `lb-move-pre-<you>-<id>`, the schema `<catalog>.lb_move_pre_<you>`, and the bundle folder `~/.bundle/lb-move-lab-preflight`, and deletes them before it finishes. If an earlier lab run left its projects, schema, or bundle folder behind, the preflight says so; set `CLEAN_LEFTOVERS = True` in its settings cell to delete them.
+The preflight creates the project `lb-move-pre-<you>-<id>-<timestamp>`, the schema `<catalog>.lb_move_pre_<you>_<timestamp>`, and the bundle folder `~/.bundle/lb-move-lab-preflight-<timestamp>`, and deletes them before it finishes. Each run has its own names, so two runs at once don't collide, and a run deletes anything an earlier one left behind once it's over 30 minutes old. If an earlier lab run left its projects, schema, or bundle folder behind, the preflight says so; set `CLEAN_LEFTOVERS = True` in its settings cell to delete them.
 
 ## Key Lakebase facts the lab shows
 

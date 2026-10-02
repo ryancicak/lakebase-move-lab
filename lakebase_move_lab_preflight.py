@@ -116,6 +116,15 @@ def brief(e, limit=200):
     return f"{type(e).__name__}: {' '.join(str(e).split('JVM stacktrace')[0].split())[:limit]}"
 
 
+RUN_TAG = str(int(time.time() * 1000))  # this run's own names end with it, so two preflights at once can't collide
+
+
+def stale(name):
+    """True for a preflight resource whose name ends in a timestamp over 30 minutes old (a newer one may still be running)."""
+    match = re.search(r"(\d{13})$", name)
+    return bool(match) and time.time() - int(match.group(1)) / 1000 > 1800
+
+
 print("Catalog for the synced-table check:", CATALOG)
 
 # COMMAND ----------
@@ -304,7 +313,8 @@ def _():
     if not found:
         return "nothing found"
     if not CLEAN_LEFTOVERS:
-        raise RuntimeError("found " + ", ".join(found) + ". The lab would trip over them instead of starting clean.")
+        raise RuntimeError("found " + ", ".join(found) + " from an earlier (or still running) lab run. "
+                           "The lab would trip over them instead of starting clean.")
     try:
         w.postgres.delete_synced_table(name=f"synced_tables/{LAB_SCHEMA}.product_catalog_synced").wait()
     except Exception:
@@ -347,15 +357,28 @@ PLATFORM = re.compile(r" (cloud_admin|databricks_control_plane)$|__db_system")  
 BUNDLE_DIR = Path(tempfile.mkdtemp(prefix="lb_pre_bundle_"))
 WORK_DIR = Path(tempfile.mkdtemp(prefix="lb_pre_"))
 if SDK_OK:
-    PRE_ID = f"lb-move-pre-{slug}-{me.id}"
-    PRE_BUNDLE = "lb-move-lab-preflight"
+    PRE_PREFIX = f"lb-move-pre-{slug}-{me.id}-"
+    PRE_ID = PRE_PREFIX + RUN_TAG
+    PRE_BUNDLE = f"lb-move-lab-preflight-{RUN_TAG}"
     PRE_BUNDLE_ROOT = f"/Workspace/Users/{USER}/.bundle/{PRE_BUNDLE}"
-    # Clear out anything a crashed earlier preflight left behind. These are this check's own names.
-    if project_exists(PRE_ID):
-        w.postgres.delete_project(name=f"projects/{PRE_ID}", purge=True).wait()
-        print("Removed a project an earlier preflight left behind")
-    if folder_exists(PRE_BUNDLE_ROOT):
-        w.workspace.delete(PRE_BUNDLE_ROOT, recursive=True)
+    # Delete what an earlier preflight of yours left behind, if it's over 30 minutes old.
+    for p in w.postgres.list_projects():
+        pid = p.name.split("/", 1)[1]
+        if pid.startswith(PRE_PREFIX) and stale(pid):
+            try:
+                w.postgres.delete_project(name=p.name, purge=True).wait()
+                print("Removed", pid, "(an earlier preflight left it behind)")
+            except Exception:
+                pass  # another run got to it first
+    try:
+        for item in w.workspace.list(f"/Workspace/Users/{USER}/.bundle"):
+            if item.path.rsplit("/", 1)[-1].startswith("lb-move-lab-preflight-") and stale(item.path):
+                try:
+                    w.workspace.delete(item.path, recursive=True)
+                except Exception:
+                    pass  # another run got to it first
+    except Exception:
+        pass  # no bundle folder yet
 
 
 def write_bundle(guard=True):
@@ -606,8 +629,23 @@ from databricks.sdk.service.postgres import (
 
 SCHEMA_CHECK = f"Schema and Delta table in {CATALOG}"
 if SDK_OK:
-    PRE_SCHEMA = f"{CATALOG}.lb_move_pre_{slug.replace('-', '_')}"
+    schema_prefix = f"lb_move_pre_{slug.replace('-', '_')}_"
+    PRE_SCHEMA = f"{CATALOG}.{schema_prefix}{RUN_TAG}"
     PRE_SOURCE, PRE_SYNCED = f"{PRE_SCHEMA}.preflight_source", f"{PRE_SCHEMA}.preflight_synced"
+    try:  # delete schemas an earlier preflight of yours left behind, if they're over 30 minutes old
+        for s in w.schemas.list(catalog_name=CATALOG):
+            if s.name.startswith(schema_prefix) and stale(s.name):
+                try:
+                    w.postgres.delete_synced_table(name=f"synced_tables/{s.full_name}.preflight_synced").wait()
+                except Exception:
+                    pass
+                try:
+                    spark.sql(f"DROP SCHEMA IF EXISTS {s.full_name} CASCADE")
+                    print("Removed", s.full_name, "(an earlier preflight left it behind)")
+                except Exception:
+                    pass  # another run got to it first
+    except Exception:
+        pass  # no access to the catalog; the schema check below says so
 
 
 @check(SCHEMA_CHECK,
