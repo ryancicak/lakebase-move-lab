@@ -32,7 +32,7 @@
 # MAGIC
 # MAGIC > It runs on Databricks serverless (environment version 5) in about 5 minutes. It installs what it needs as it goes, creates two small Lakebase projects, and deletes them at the end.
 # MAGIC
-# MAGIC > **Two projects stand in for two workspaces.** A branch can't leave its project, even inside one workspace. So moving between two projects is the same job as moving between workspaces. Where a real move between workspaces is different, the lab says so. Have a second workspace? You can put the new home there instead (see **Before you start**).
+# MAGIC > **Two projects stand in for two workspaces.** A branch can't leave its project, even inside one workspace. So moving between two projects is the same job as moving between workspaces. Where a real move between workspaces is different, the lab says so. Have a second workspace? Pick it in **Choose your setup**, a few cells down.
 
 # COMMAND ----------
 
@@ -40,22 +40,94 @@
 # MAGIC ## Before you start
 # MAGIC
 # MAGIC * **Use serverless compute.** The notebook asks for environment version 5, and versions 1 through 4 passed too. A classic cluster with internet access should work, but we haven't tested one.
-# MAGIC * **You need permission to create Lakebase projects** in this workspace.
-# MAGIC * **The synced-table steps need a catalog where you can create a schema.** The default is `main`. To use another one, set `CATALOG` in Module 0's helpers cell. If the lab can't create the schema, no problem: it skips those steps and tells you why. You can also set `DO_SYNCED_TABLES = False` to skip them on purpose.
+# MAGIC * **You need permission to create Lakebase projects.**
 # MAGIC * **Run the cells in order.** Each one prints what it did, so you can stop and look anytime.
 # MAGIC
-# MAGIC > **Optional: use a real second workspace.** By default, both homes live in this workspace. To put the new home in another workspace:
-# MAGIC >
-# MAGIC > 1. Make a secret scope here, for example `lb-move-lab`.
-# MAGIC > 2. Add two secrets: `host`, the other workspace's URL, and `token`, a personal access token you created there. (A service principal works too: add `client-id` and `client-secret` instead of `token`.)
-# MAGIC > 3. In Module 0's helpers cell, set `NEW_WORKSPACE_SECRETS = "lb-move-lab"`.
-# MAGIC >
-# MAGIC > The lab signs in to both workspaces and runs the same steps. Two differences:
-# MAGIC >
-# MAGIC > * On serverless, Lakebase hostnames go to a Databricks proxy, and in testing it refused the other workspace's computes. So the lab looks up their public address (in public DNS) and connects to that.
-# MAGIC > * If the other workspace has its own metastore, the lab skips the synced table on the new side, because its Delta source would have to be copied over first.
-# MAGIC >
-# MAGIC > Databricks hides anything that matches a secret, so the other workspace's URL shows up as `[REDACTED]` in the output. The README has the commands.
+# MAGIC ### Choose your setup
+# MAGIC
+# MAGIC Run the next cell. It puts three boxes at the top of the notebook:
+# MAGIC
+# MAGIC 1. **New home goes to**: where the new home gets built.
+# MAGIC    * **This workspace**, the default: two projects in this workspace stand in for two workspaces. Nothing to set up.
+# MAGIC    * **Another workspace**: a real second workspace. You'll need a personal access token from it. (In that workspace, it's under **Settings**, **Developer**, **Access tokens**.)
+# MAGIC 2. **Other workspace URL**: only for another workspace, for example `https://adb-1234567890123456.7.azuredatabricks.net`.
+# MAGIC 3. **Catalog**: for the synced-table steps, one where you can create a schema. The default is `main`. If you can't create a schema there, no problem: the lab skips those steps and tells you why.
+# MAGIC
+# MAGIC Change a box, then run the cell again. If you picked another workspace, it asks for the token in a hidden box the first time, keeps it in a secret scope of your own, and checks that it works. Then click **Run all**.
+# MAGIC
+# MAGIC > With another workspace, a few things work differently. Serverless sends Lakebase hostnames to a Databricks proxy, which refused the other workspace's computes in testing, so the lab connects to their public address instead (found in public DNS). If that workspace has its own metastore, the lab skips the synced table on the new side, because its Delta source would have to be copied over first. And Databricks hides anything that matches a secret, so that workspace's URL shows up as `[REDACTED]` in the output.
+
+# COMMAND ----------
+
+# DBTITLE 1,Choose your setup
+"""Put the setup questions at the top of the notebook, and sign you in to the other workspace if you pick one.
+
+For another workspace, its URL and your token go in a secret scope of your own, lb-move-lab-<you>.
+The token is asked for in a hidden box. It's never shown, and it's never saved in the notebook.
+"""
+import getpass
+import re
+
+from databricks.sdk import WorkspaceClient
+
+THIS, OTHER = "This workspace", "Another workspace"
+dbutils.widgets.dropdown("where", THIS, [THIS, OTHER], "1. New home goes to")
+dbutils.widgets.text("other_url", "", "2. Other workspace URL")
+dbutils.widgets.text("catalog", "main", "3. Catalog")
+
+w = WorkspaceClient()
+user = w.current_user.me().user_name
+scope = "lb-move-lab-" + (re.sub(r"[^a-z0-9]+", "-", user.split("@")[0].lower()).strip("-")[:16].rstrip("-") or "user")
+
+
+def ask_for_token(prompt):
+    """A hidden box for the token. A job can't answer it, so then it says how to store the token instead."""
+    try:
+        return getpass.getpass(prompt).strip()
+    except Exception:
+        raise RuntimeError("No working token for the other workspace yet. Run this cell yourself once, or store "
+                           f"one with the Databricks CLI: databricks secrets put-secret {scope} token") from None
+
+
+def signed_in_as():
+    """Sign in to the other workspace with what's in your scope, and return your user name there."""
+    keys = {s.key for s in w.secrets.list_secrets(scope=scope)}
+    secret = lambda key: dbutils.secrets.get(scope, key)
+    if "client-id" in keys:  # a service principal, stored with the CLI
+        other = WorkspaceClient(host=secret("host"), client_id=secret("client-id"),
+                                client_secret=secret("client-secret"), auth_type="oauth-m2m")
+    else:
+        other = WorkspaceClient(host=secret("host"), token=secret("token"), auth_type="pat")
+    return other.current_user.me().user_name
+
+
+if dbutils.widgets.get("where") == OTHER:
+    url = dbutils.widgets.get("other_url").strip().rstrip("/")
+    if not url:
+        raise ValueError("You picked another workspace. Put its URL in box 2 at the top, then run this cell again.")
+    url = "https://" + url.split("://")[-1]
+    if scope not in {s.name for s in w.secrets.list_scopes()}:
+        w.secrets.create_scope(scope=scope)
+    w.secrets.put_secret(scope=scope, key="host", string_value=url)
+    stored = {s.key for s in w.secrets.list_secrets(scope=scope)}
+    if not stored & {"token", "client-id"}:
+        w.secrets.put_secret(scope=scope, key="token", string_value=ask_for_token(
+            "Paste a personal access token from the other workspace (it stays hidden): "))
+    for attempt in range(3):
+        try:
+            other_user = signed_in_as()
+            break
+        except Exception as e:
+            if attempt == 2 or "client-id" in stored:
+                raise RuntimeError(f"Couldn't sign in to the other workspace: {str(e)[:200]}") from None
+            w.secrets.put_secret(scope=scope, key="token", string_value=ask_for_token(
+                "That token didn't work in the other workspace. Paste another one (it stays hidden): "))
+    print(f"✅ The new home goes to another workspace, where you're signed in as {other_user}.")
+    print(f"   Its URL and your token are in secret scope {scope}. Only you and workspace admins can read it.")
+else:
+    print("✅ The new home goes in this workspace, as a second project. Nothing else to set up.")
+print("   Catalog for the synced-table steps:", dbutils.widgets.get("catalog").strip() or "main")
+print("\nChange a box at the top and run this cell again, or click Run all.")
 
 # COMMAND ----------
 
@@ -216,7 +288,7 @@ print(subprocess.run([str(CLI), "--version"], capture_output=True, text=True).st
 # MAGIC * **Sets up helpers** we'll reuse. One takes a database's **fingerprint**: a row count plus a checksum of every row, for each table. That's how we'll prove two copies are identical.
 # MAGIC * **Defines the app's migrations:** numbered SQL changes, run in order and recorded in a history table. That's what Flyway or Liquibase does for a real app.
 # MAGIC
-# MAGIC > This is also where you set `CATALOG`, if you need a catalog other than `main` for the synced-table steps, and `NEW_WORKSPACE_SECRETS`, if you want the new home in another workspace.
+# MAGIC > Your answers from **Choose your setup** land here: `CATALOG`, and `NEW_WORKSPACE_SECRETS` if the new home goes to another workspace.
 
 # COMMAND ----------
 
@@ -262,11 +334,20 @@ from databricks.sdk.service.postgres import (
 w = WorkspaceClient()
 me = w.current_user.me()
 USER = me.user_name  # your Postgres user name
+slug = re.sub(r"[^a-z0-9]+", "-", USER.split("@")[0].lower()).strip("-")[:16].rstrip("-") or "user"
 
-# Optional: put the new home in another workspace. Leave this as None and both homes live in this workspace.
-# To use another workspace, make a secret scope here with its address ("host") and your credentials there
-# ("token", or "client-id" and "client-secret" for a service principal), and put the scope's name here.
-NEW_WORKSPACE_SECRETS = None
+
+def answer(name, default):
+    """Your answer to a question in Choose your setup, from the boxes at the top (or its default)."""
+    try:
+        return dbutils.widgets.get(name).strip() or default
+    except Exception:
+        return default
+
+
+# From Choose your setup. For another workspace, its URL and your credentials there are in a secret scope
+# of your own: "host", plus "token", or "client-id" and "client-secret" for a service principal.
+NEW_WORKSPACE_SECRETS = f"lb-move-lab-{slug}" if answer("where", "") == "Another workspace" else None
 
 
 def sign_in_elsewhere(scope):
@@ -279,7 +360,8 @@ def sign_in_elsewhere(scope):
 
     host, token, client_id = secret("host"), secret("token"), secret("client-id")
     if not host or not (token or client_id):
-        raise ValueError(f"Secret scope {scope} needs 'host', plus 'token' or 'client-id' and 'client-secret'")
+        raise ValueError(f"No URL or token stored for the other workspace yet (secret scope {scope}). "
+                         "Run Choose your setup, the first code cell, and paste a token when it asks.")
     if client_id:
         return WorkspaceClient(host=host, client_id=client_id, client_secret=secret("client-secret"),
                                auth_type="oauth-m2m")
@@ -291,7 +373,6 @@ TWO_WORKSPACES = w_new is not w
 NEW_USER = w_new.current_user.me().user_name if TWO_WORKSPACES else USER  # your Postgres user over there
 
 # Unique, readable names: your user name plus your numeric user id.
-slug = re.sub(r"[^a-z0-9]+", "-", USER.split("@")[0].lower()).strip("-")[:16].rstrip("-") or "user"
 OLD_ID = f"lb-move-old-{slug}-{me.id}"  # the old home, in this workspace
 NEW_ID = f"lb-move-new-{slug}-{me.id}"  # the new home, in this workspace or the other one
 DB = "databricks_postgres"  # the default database in every Lakebase project
@@ -304,7 +385,7 @@ BUNDLE_ROOT = f"/Workspace/Users/{NEW_USER}/.bundle/{BUNDLE_NAME}"  # in the new
 
 # Optional synced-table steps (Module 1, Step 6 and Module 4, Step 4).
 DO_SYNCED_TABLES = True
-CATALOG = "main"  # a catalog where you can create a schema
+CATALOG = answer("catalog", "main")  # from Choose your setup: a catalog where you can create a schema
 UC_SCHEMA = "lb_move_" + slug.replace("-", "_")
 SOURCE_TABLE = f"{CATALOG}.{UC_SCHEMA}.product_catalog"  # a lakehouse (Delta) table
 SYNCED_TABLE = f"{CATALOG}.{UC_SCHEMA}.product_catalog_synced"  # its copy inside Lakebase
@@ -1522,7 +1603,7 @@ else:
 # MAGIC
 # MAGIC ### Step 2: Remove the guard and delete everything
 # MAGIC
-# MAGIC This cell takes `prevent_destroy` out of the bundle file, redeploys, and runs `bundle destroy` for real. The bundle sets `purge_on_delete`, so the project is deleted right away and its name is free for your next run. Then it deletes everything the bundle never owned: the old home, the synced table, the Unity Catalog schema, and the local files. With a second workspace, it cleans up both. It's destructive, so it only runs while `CONFIRM_TEARDOWN = True`.
+# MAGIC This cell takes `prevent_destroy` out of the bundle file, redeploys, and runs `bundle destroy` for real. The bundle sets `purge_on_delete`, so the project is deleted right away and its name is free for your next run. Then it deletes everything the bundle never owned: the old home, the synced table, the Unity Catalog schema, and the local files. With a second workspace, it cleans up both, and deletes the secret scope that holds your token. (The token keeps working until it expires, so revoke it in that workspace if you're done.) It's destructive, so it only runs while `CONFIRM_TEARDOWN = True`.
 
 # COMMAND ----------
 
@@ -1560,6 +1641,13 @@ else:
         w_new.workspace.delete(BUNDLE_ROOT, recursive=True)  # only this lab's bundle folder
     except Exception:
         pass
+    if NEW_WORKSPACE_SECRETS:
+        try:
+            w.secrets.delete_scope(scope=NEW_WORKSPACE_SECRETS)  # the scope Choose your setup made for your token
+            print(f"Deleted secret scope {NEW_WORKSPACE_SECRETS}. The token keeps working until it expires, "
+                  "so revoke it in the other workspace if you're done with it.")
+        except Exception:
+            print(f"Couldn't delete secret scope {NEW_WORKSPACE_SECRETS}; delete it yourself if you're done with it.")
     for folder in (WORK_DIR, BUNDLE_DIR):
         shutil.rmtree(folder, ignore_errors=True)
     print("Done.")

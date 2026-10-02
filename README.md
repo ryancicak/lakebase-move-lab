@@ -14,9 +14,9 @@ One notebook that walks you through promoting and moving a Lakebase environment,
 ## Quick start
 
 1. **Optional, but worth it: check your workspace first.** The [preflight](#before-the-lab-run-the-preflight) takes about 3 minutes and tells you what to fix before you start.
-2. **Get the notebook** into your workspace. Clone this repo as a Git folder, or download `lakebase_move_lab.py` and import it (Workspace, then Import).
-3. **Attach serverless compute.** The notebook asks for environment version 5.
-4. **Run the cells in order.** It takes about 5 minutes and cleans up after itself.
+2. **Get the notebook** into your workspace. Clone this repo as a Git folder, or download `lakebase_move_lab.py` and import it (Workspace, then Import). Attach serverless compute.
+3. **Answer two questions.** Run the first code cell, **Choose your setup**. Boxes show up at the top of the notebook: where the new home goes (**This workspace**, the default, or **Another workspace**), and the catalog for the synced-table steps.
+4. **Click Run all.** It takes about 5 minutes and cleans up after itself.
 
 Stuck, or curious why something works the way it does? Ask the [lab expert](#ask-the-lab-expert) in Genie Code.
 
@@ -56,20 +56,20 @@ Two projects in one workspace stand in for two workspaces. A branch can't leave 
 
 ## Optional: use a real second workspace
 
-By default, both homes live in the workspace you run the lab in. To put the new home in another workspace, give the lab that workspace's address and your credentials there, in a secret scope:
+By default, both homes live in the workspace you run the lab in. To put the new home in another workspace, you don't need the CLI or any code changes:
 
-```bash
-databricks secrets create-scope lb-move-lab                  # in the workspace where you'll run the lab
-databricks secrets put-secret lb-move-lab host --string-value https://<other-workspace-url>
-databricks secrets put-secret lb-move-lab token              # paste a personal access token you created in the other workspace
-```
+1. In the other workspace, create a personal access token (**Settings**, **Developer**, **Access tokens**).
+2. In the lab, run **Choose your setup**, pick **Another workspace** in the first box, and put its URL in the second.
+3. Run the cell again. It asks for the token in a hidden box, keeps it in a secret scope of your own (`lb-move-lab-<you>`, which only you and workspace admins can read), and signs in to check it works. Then click **Run all**.
 
-A service principal works too: put `client-id` and `client-secret` in the scope instead of `token`. Then, in the lab's Module 0 helpers cell, set `NEW_WORKSPACE_SECRETS = "lb-move-lab"`. Everything else runs the same, with two differences:
+The token is never shown or saved in the notebook. Module 7 deletes the scope when you clean up; the token itself keeps working until it expires, so revoke it in the other workspace when you're done. In a job, nobody can answer the hidden box, so store the token first: run the cell interactively once, or use `databricks secrets put-secret lb-move-lab-<you> token`. A service principal works too: put `client-id` and `client-secret` in that scope instead of `token`.
+
+Everything else runs the same, with two differences:
 
 - **The lab reaches the other workspace's computes at their public address.** On serverless, every Lakebase hostname resolves to a Databricks proxy, and in testing that proxy refused the other workspace's computes. So the lab looks up their public address in public DNS (dns.google, or cloudflare-dns.com as a fallback) and connects to that.
 - **With separate metastores, the synced table stays behind.** Its Delta source would have to be copied to the other workspace first, which is its own job, so the lab skips that step and says so.
 
-Databricks hides anything that matches a secret, so the other workspace's URL shows up as `[REDACTED]` in the output. To check it all first, run the preflight with its **new_workspace_secrets** widget set to the same scope.
+Databricks hides anything that matches a secret, so the other workspace's URL shows up as `[REDACTED]` in the output. To check it all first, run the preflight with the same answers.
 
 ## Before the lab: run the preflight
 
@@ -86,7 +86,7 @@ The preflight, `lakebase_move_lab_preflight`, tries everything the lab needs, th
 
 It takes about 3 minutes, uses one throwaway project, `lb-move-pre-<you>-<id>-<timestamp>` (one in each workspace, if you use two), and deletes it. There are three ways to run it:
 
-1. **Run the notebook.** Open `lakebase_move_lab_preflight`, set the **catalog** widget to the catalog you'll use in the lab (and **new_workspace_secrets**, if you'll use a second workspace), attach serverless compute, and click Run all. The last cell says ✅ ready, ⚠️ ready with notes, or ❌ not ready, with a fix for each problem.
+1. **Run the notebook.** Open `lakebase_move_lab_preflight`, attach serverless compute, run its first cell, **Choose your setup**, with the answers you'll give the lab, and click Run all. The last cell says ✅ ready, ⚠️ ready with notes, or ❌ not ready, with a fix for each problem.
 2. **Ask Genie Code.** Add the skills once (below), open Genie Code in any notebook, and ask: *"Check that this workspace is ready for the Lakebase Move Lab."* Genie Code adds one cell that runs the preflight as a one-time serverless job, then explains the results and the fixes. It asks before running code, unless you've set Genie Code to auto-approve.
 3. **Paste one cell.** The cell in [`skills/lakebase-move-lab-preflight/SKILL.md`](skills/lakebase-move-lab-preflight/SKILL.md) runs the preflight from any notebook and prints the results. It uses a copy of the preflight next to your notebook if there is one, and otherwise runs it straight from this repo.
 
@@ -117,7 +117,8 @@ It answers questions, and it won't create or change anything unless you ask. Rea
 
 - **Serverless compute with internet access.** The notebook downloads the PostgreSQL 17 client tools (`pg_dump`, `pg_restore`, and `libpq`, which psycopg also uses) from [apt.postgresql.org](https://apt.postgresql.org) and the Databricks CLI from [GitHub](https://github.com/databricks/cli/releases), and unpacks them locally. No admin rights needed. A classic cluster with internet access should work too, but we haven't tested one.
 - **Permission to create Lakebase projects.**
-- **For the optional synced-table steps:** `CREATE SCHEMA` on a Unity Catalog catalog (default `main`). To use another one, set `CATALOG` in the Module 0 helpers cell, or set `DO_SYNCED_TABLES = False` to skip those steps.
+- **For the optional synced-table steps:** `CREATE SCHEMA` on a Unity Catalog catalog (default `main`). Pick another one in **Choose your setup**. Without it, the lab skips those steps and says why.
+- **For another workspace:** a personal access token from it (or a service principal), and permission to create a secret scope here, which every user has by default.
 
 ## What it creates, and deletes
 
@@ -152,7 +153,10 @@ October 1 and 2, 2026, in an AWS us-west-2 workspace:
   - an interactive **Run all** by a workspace user, in a notebook freshly imported from this repo's URL.
 
   Each run took about 4 minutes, every check passed, and the teardown left nothing behind.
-- **The lab with a real second workspace,** from an AWS workspace to an Azure workspace, as a serverless job: all 79 cells passed, both databases restored with exit code 0 across clouds, the gate passed 7 of 7, writes were paused for 46 seconds, and the teardown cleaned up both workspaces. The synced-table step skipped, as designed, because the two workspaces have separate metastores. The first try failed at the first Postgres connection: serverless sent the Azure compute's hostname to a Databricks proxy, which answered `FATAL: External authorization failed`. Connecting to the compute's public address worked, and that's what the lab does now.
+- **The lab with a real second workspace,** from an AWS workspace to an Azure workspace, as a serverless job and interactively: every cell passed, both databases restored with exit code 0 across clouds, the gate passed 7 of 7, writes were paused for 44 to 46 seconds, and the teardown cleaned up both workspaces. The synced-table step skipped, as designed, because the two workspaces have separate metastores. The first try failed at the first Postgres connection: serverless sent the Azure compute's hostname to a Databricks proxy, which answered `FATAL: External authorization failed`. Connecting to the compute's public address worked, and that's what the lab does now.
+- **Choose your setup:**
+  - interactively, as a workspace user: picking **Another workspace** re-ran the cell on its own and asked for the URL; entering it brought up the hidden token box; a wrong token got "That token didn't work" and a second box; with a working token, the cell signed in, and **Run all** moved everything to the Azure workspace, using the catalog from box 3, then deleted the scope;
+  - as jobs: the default answers ran the one-workspace lab; **Another workspace** with no token stored stopped in about a minute with the CLI command to store one, instead of hanging; with a token stored, the whole lab ran.
 - **The preflight:**
   - ✅ on environment versions 1 through 5;
   - ⚠️ with a catalog that doesn't exist, and for a user without `CREATE SCHEMA` on `main`;

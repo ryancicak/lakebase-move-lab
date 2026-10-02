@@ -16,8 +16,8 @@ This skill runs that notebook as a one-time serverless job and explains the resu
 
 ## Steps
 
-1. Tell the user in one or two sentences what will happen: a one-time serverless job that takes about 3 minutes and uses one throwaway Lakebase project, named `lb-move-pre-...`, which it deletes at the end. If the user named a catalog for the lab, use it; otherwise use `main`. If they'll put the lab's new home in a second workspace, use the secret scope they named for it (the lab's `NEW_WORKSPACE_SECRETS`); otherwise leave it empty.
-2. Add ONE Python cell with exactly the code in "The cell" below, changing only `CATALOG` and `NEW_WORKSPACE_SECRETS`, and run it. Don't split, shorten, or rewrite it. It waits for the job to finish, so it runs for a few minutes.
+1. Tell the user in one or two sentences what will happen: a one-time serverless job that takes about 3 minutes and uses one throwaway Lakebase project, named `lb-move-pre-...`, which it deletes at the end. If the user named a catalog for the lab, use it; otherwise use `main`. If they'll put the lab's new home in another workspace, use that workspace's URL; otherwise leave it empty. (For another workspace, the token has to be stored already: the lab's or the preflight's first cell, **Choose your setup**, asks for it in a hidden box. If the sign-in check fails, tell them to run that cell once.)
+2. Add ONE Python cell with exactly the code in "The cell" below, changing only `CATALOG` and `OTHER_WORKSPACE_URL`, and run it. Don't split, shorten, or rewrite it. It waits for the job to finish, so it runs for a few minutes.
 3. When the cell finishes, answer from its output:
    - First line: the verdict, one of ✅ Ready, ⚠️ Ready with notes, or ❌ Not ready.
    - Then a short table of every check that isn't ✅: the check, what it means for the lab, and the fix. Use the fix from the output; the troubleshooting table below adds context.
@@ -34,12 +34,13 @@ import time
 from databricks.sdk import WorkspaceClient
 
 CATALOG = "main"  # the catalog you'll use for the lab's synced table
-NEW_WORKSPACE_SECRETS = ""  # the secret scope for a second workspace, if the lab will use one
+OTHER_WORKSPACE_URL = ""  # the other workspace's URL, if the lab's new home goes there
 REPO = "https://github.com/ryancicak/lakebase-move-lab"
 NOTEBOOK = "lakebase_move_lab_preflight"
 
 w = WorkspaceClient()
-params = {"catalog": CATALOG, "new_workspace_secrets": NEW_WORKSPACE_SECRETS}
+params = {"catalog": CATALOG, "other_url": OTHER_WORKSPACE_URL,
+          "where": "Another workspace" if OTHER_WORKSPACE_URL else "This workspace"}
 task = {"task_key": "preflight", "timeout_seconds": 1800,
         "notebook_task": {"notebook_path": NOTEBOOK, "source": "GIT", "base_parameters": params}}
 spec = {"run_name": "Lakebase Move Lab preflight", "tasks": [task],
@@ -96,10 +97,10 @@ else:
 | Connect with a login token | No Postgres access | A timeout points at the serverless network policy; anything else goes to the lab's owner |
 | Create a second database, Roles, ownership, and grants, pg_dump and a filtered pg_restore, Child branch and its compute, Point-in-time branch | That step of the lab fails | Send the error to the lab's owner |
 | Snapshots (warning) | The lab skips its snapshot demo | Nothing to do |
-| Schema and Delta table in the catalog (warning) | The lab skips its synced-table steps | Pick a catalog where the user can create schemas and set `CATALOG` in the lab's Module 0 helpers cell to it (it's a setting in the code, not a widget), or ask for `CREATE SCHEMA` on the catalog |
+| Schema and Delta table in the catalog (warning) | The lab skips its synced-table steps | Pick a catalog where the user can create schemas and put it in box 3 of the lab's **Choose your setup** (its first code cell), or ask for `CREATE SCHEMA` on the catalog |
 | Synced table into Lakebase (warning) | The lab skips its synced-table steps | Read the error in the detail |
 | prevent_destroy guards the bundle, Cleanup | The lab's cleanup may not work | Delete what the detail lists, and send it to the lab's owner |
-| Second workspace: sign-in | The lab can't use the second workspace | The secret scope needs `host` (the other workspace's URL), plus `token`, or `client-id` and `client-secret`; the user needs READ on the scope |
+| Second workspace: sign-in | The lab can't use the second workspace | No token stored yet, or it doesn't work there. Have the user open the lab (or the preflight notebook) and run its first cell, **Choose your setup**, with **Another workspace** and the URL: it asks for a token in a hidden box. Then run this check again |
 | Second workspace: no leftovers from an earlier lab run | The lab trips over an old new-home project there | Run the lab's Module 7, or run the preflight notebook with `CLEAN_LEFTOVERS = True` |
 | Second workspace: bundle deploys a Lakebase project | The lab can't build its new home there | Permission to create Lakebase projects in that workspace, and a writable home folder there |
 | Second workspace: connect from here | No Postgres access to the new home | The notebook reaches that workspace's computes at their public address, found in public DNS (dns.google or cloudflare-dns.com); a timeout points at the serverless network policy |

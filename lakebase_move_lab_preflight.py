@@ -26,6 +26,85 @@
 # MAGIC It creates one small throwaway project, `lb-move-pre-…`, and deletes it at the end. Run it the way you'll run the lab: on serverless, as yourself. The last cell gives you the verdict: ✅ ready, ⚠️ ready with notes, or ❌ fix these first.
 # MAGIC
 # MAGIC > You can also ask **Genie Code** to run this check and explain the results. The repo's README shows how.
+# MAGIC
+# MAGIC ### Choose your setup
+# MAGIC
+# MAGIC Run the next cell. It puts the lab's three boxes at the top: **New home goes to** (**This workspace** or **Another workspace**), **Other workspace URL**, and **Catalog** (for the synced-table steps). Answer them the way you will in the lab, then click **Run all**. For another workspace, the cell asks for a token in a hidden box the first time and keeps it in a secret scope of your own, and the lab uses the same one.
+
+# COMMAND ----------
+
+# DBTITLE 1,Choose your setup
+"""The lab's setup questions, in boxes at the top. Answer them the way you will in the lab.
+
+For another workspace, its URL and your token go in a secret scope of your own, lb-move-lab-<you>.
+The token is asked for in a hidden box. It's never shown, and it's never saved in the notebook.
+"""
+import getpass
+import re
+
+from databricks.sdk import WorkspaceClient
+
+THIS, OTHER = "This workspace", "Another workspace"
+dbutils.widgets.dropdown("where", THIS, [THIS, OTHER], "1. New home goes to")
+dbutils.widgets.text("other_url", "", "2. Other workspace URL")
+dbutils.widgets.text("catalog", "main", "3. Catalog")
+
+w = WorkspaceClient()
+user = w.current_user.me().user_name
+scope = "lb-move-lab-" + (re.sub(r"[^a-z0-9]+", "-", user.split("@")[0].lower()).strip("-")[:16].rstrip("-") or "user")
+
+
+def ask_for_token(prompt):
+    """A hidden box for the token. A job can't answer it, so then it says how to store the token instead."""
+    try:
+        return getpass.getpass(prompt).strip()
+    except Exception:
+        raise RuntimeError("No working token for the other workspace yet. Run this cell yourself once, or store "
+                           f"one with the Databricks CLI: databricks secrets put-secret {scope} token") from None
+
+
+def signed_in_as():
+    """Sign in to the other workspace with what's in your scope, and return your user name there."""
+    keys = {s.key for s in w.secrets.list_secrets(scope=scope)}
+    secret = lambda key: dbutils.secrets.get(scope, key)
+    if "client-id" in keys:  # a service principal, stored with the CLI
+        other = WorkspaceClient(host=secret("host"), client_id=secret("client-id"),
+                                client_secret=secret("client-secret"), auth_type="oauth-m2m")
+    else:
+        other = WorkspaceClient(host=secret("host"), token=secret("token"), auth_type="pat")
+    return other.current_user.me().user_name
+
+
+if dbutils.widgets.get("where") == OTHER:
+    try:
+        url = dbutils.widgets.get("other_url").strip().rstrip("/")
+        if not url:
+            raise ValueError("You picked another workspace. Put its URL in box 2 at the top, then run this cell again.")
+        url = "https://" + url.split("://")[-1]
+        if scope not in {s.name for s in w.secrets.list_scopes()}:
+            w.secrets.create_scope(scope=scope)
+        w.secrets.put_secret(scope=scope, key="host", string_value=url)
+        stored = {s.key for s in w.secrets.list_secrets(scope=scope)}
+        if not stored & {"token", "client-id"}:
+            w.secrets.put_secret(scope=scope, key="token", string_value=ask_for_token(
+                "Paste a personal access token from the other workspace (it stays hidden): "))
+        for attempt in range(3):
+            try:
+                other_user = signed_in_as()
+                break
+            except Exception as e:
+                if attempt == 2 or "client-id" in stored:
+                    raise RuntimeError(f"Couldn't sign in to the other workspace: {str(e)[:200]}") from None
+                w.secrets.put_secret(scope=scope, key="token", string_value=ask_for_token(
+                    "That token didn't work in the other workspace. Paste another one (it stays hidden): "))
+        print(f"✅ The new home goes to another workspace, where you're signed in as {other_user}.")
+        print(f"   Its URL and your token are in secret scope {scope}. Only you and workspace admins can read it.")
+    except Exception as e:
+        print(f"⚠️ {e}\n   The checks below report it too, with the fix.")
+else:
+    print("✅ The new home goes in this workspace, as a second project. Nothing else to set up.")
+print("   Catalog for the synced-table steps:", dbutils.widgets.get("catalog").strip() or "main")
+print("\nChange a box at the top and run this cell again, or click Run all.")
 
 # COMMAND ----------
 
@@ -47,7 +126,7 @@ dbutils.library.restartPython()
 # MAGIC %md
 # MAGIC ### Settings and how checks are recorded
 # MAGIC
-# MAGIC Set **catalog** (the widget at the top) to the catalog you'll use for the lab's synced table. The lab's default is `main`. Putting the lab's new home in another workspace? Set **new_workspace_secrets** to the same secret scope you'll give the lab. Each check records one of four results, with a fix when it isn't a pass:
+# MAGIC Your answers from **Choose your setup** come in here. Each check records one of four results, with a fix when it isn't a pass:
 # MAGIC
 # MAGIC * ✅ **pass**
 # MAGIC * ⚠️ **warning**: the lab still runs, minus a step
@@ -75,10 +154,18 @@ from pathlib import Path
 
 import pandas as pd
 
-dbutils.widgets.text("catalog", "main", "Catalog for the lab's synced table")
-dbutils.widgets.text("new_workspace_secrets", "", "Secret scope for a second workspace (optional)")
-CATALOG = dbutils.widgets.get("catalog").strip() or "main"
-NEW_SCOPE = dbutils.widgets.get("new_workspace_secrets").strip()  # the lab's NEW_WORKSPACE_SECRETS, if you use it
+
+
+def answer(name, default):
+    """Your answer to a question in Choose your setup, from the boxes at the top (or its default)."""
+    try:
+        return dbutils.widgets.get(name).strip() or default
+    except Exception:
+        return default
+
+
+CATALOG = answer("catalog", "main")
+SECOND_WORKSPACE = answer("where", "") == "Another workspace"  # the lab's new home goes to another workspace
 CLEAN_LEFTOVERS = False  # True deletes what an earlier lab run left behind (its projects, schema, and bundle folder)
 
 PG_VERSION = 17  # the lab's Postgres version
@@ -134,7 +221,7 @@ def stale(name):
 
 
 print("Catalog for the synced-table check:", CATALOG)
-print("Second workspace:", f"from secret scope {NEW_SCOPE}" if NEW_SCOPE else "none (the lab's default)")
+print("Where the new home goes:", "another workspace" if SECOND_WORKSPACE else "this workspace (the lab's default)")
 
 # COMMAND ----------
 
@@ -658,7 +745,7 @@ def _():
 # MAGIC %md
 # MAGIC ### Second workspace (optional)
 # MAGIC
-# MAGIC Only if you'll use the lab's `NEW_WORKSPACE_SECRETS`: set **new_workspace_secrets** (the widget at the top) to the same secret scope. Then this checks the other workspace the way the lab uses it:
+# MAGIC Only if you picked **Another workspace** in **Choose your setup**. Then this checks the other workspace the way the lab uses it:
 # MAGIC
 # MAGIC * signs in there with the scope's address and credentials;
 # MAGIC * looks for an earlier lab run's leftovers there;
@@ -666,24 +753,26 @@ def _():
 # MAGIC * connects to it from here, and restores this workspace's dump into it;
 # MAGIC * tells you whether the synced table can move (it can't if the other workspace has its own metastore).
 # MAGIC
-# MAGIC With the widget empty, this section does nothing.
+# MAGIC With **This workspace** picked, this section does nothing.
 
 # COMMAND ----------
 
 # DBTITLE 1,Second workspace: sign-in, leftovers, bundle, connection, and a restore from here
-"""Only with new_workspace_secrets set: try the other workspace the way the lab's two-workspace mode uses it."""
+"""Only if you picked Another workspace: try the other workspace the way the lab uses it."""
 NEW_SIGN_IN, NEW_BUNDLE = "Second workspace: sign-in", "Second workspace: bundle deploys a Lakebase project"
 NEW_CONNECT = "Second workspace: connect from here"
 BUNDLE_DIR_NEW = Path(tempfile.mkdtemp(prefix="lb_pre_bundle_new_"))
 w_new = None
+NEW_SCOPE = f"lb-move-lab-{slug}" if SECOND_WORKSPACE and SDK_OK else ""  # where Choose your setup keeps it
 
-if not NEW_SCOPE:
-    print("No second workspace set, so there's nothing to check here.")
+if not SECOND_WORKSPACE:
+    print("The new home goes in this workspace, so there's nothing to check here.")
 else:
     @check(NEW_SIGN_IN,
-           f"Put the other workspace's URL in secret scope {NEW_SCOPE} as 'host', plus 'token' (a personal access token "
-           "you created there), or 'client-id' and 'client-secret' for a service principal. You need READ on the scope.",
-           needs=("Python packages (PyPI)",))
+           "Run this notebook's first code cell, Choose your setup, interactively, with the other workspace's URL in "
+           "box 2: it asks for a token in a hidden box. Or store one with the Databricks CLI: databricks secrets "
+           f"put-secret {NEW_SCOPE or 'lb-move-lab-<you>'} token",
+           needs=(SDK_CHECK,))
     def _():
         global w_new, NEW_USER
         from databricks.sdk import WorkspaceClient
@@ -695,8 +784,10 @@ else:
                 return None
 
         host, token, client_id = secret("host"), secret("token"), secret("client-id")
-        if not host or not (token or client_id):
-            raise RuntimeError(f"secret scope {NEW_SCOPE} needs 'host', plus 'token' or 'client-id' and 'client-secret'")
+        if not host:
+            raise RuntimeError(f"no URL stored for the other workspace yet (secret scope {NEW_SCOPE})")
+        if not (token or client_id):
+            raise RuntimeError(f"no token stored for the other workspace yet (secret scope {NEW_SCOPE})")
         if client_id:
             ws = WorkspaceClient(host=host, client_id=client_id, client_secret=secret("client-secret"),
                                  auth_type="oauth-m2m")
@@ -818,8 +909,8 @@ if SDK_OK:
 
 @check(SCHEMA_CHECK,
        f"Only a warning: without it the lab skips its synced-table steps. To include them, pick a catalog where you can "
-       f"create schemas: set CATALOG in the lab's Module 0 helpers cell to it (and this check's catalog widget, to check "
-       f"it first). Or ask for CREATE SCHEMA on {CATALOG}.",
+       f"create schemas, and put it in box 3 of Choose your setup, here and in the lab. Or ask for CREATE SCHEMA on "
+       f"{CATALOG}.",
        needs=(SDK_CHECK,))
 def _():
     try:
@@ -960,4 +1051,4 @@ print({
     "not ready": f"❌ Not ready: fix the {len(fails)} item(s) marked ❌, then run this check again.",
 }[VERDICT])
 dbutils.notebook.exit(json.dumps({"verdict": VERDICT, "user": globals().get("USER"), "catalog": CATALOG,
-                                  "new_workspace_secrets": NEW_SCOPE or None, "results": RESULTS}))
+                                  "second_workspace": SECOND_WORKSPACE, "results": RESULTS}))

@@ -6,14 +6,18 @@ Two projects in one workspace stand in for two workspaces. A branch can't leave 
 
 ## Settings a learner can change
 
-All in Module 0's helpers cell, **Connect, name the two projects, and define helpers**. They're settings in the code, not widgets:
+The learner answers three questions in **Choose your setup**, the first code cell, which runs before the installs. The answers are widgets, the boxes at the top of the notebook, so they survive the Python restart and can be passed as job parameters:
 
-- `CATALOG` (default `main`): the Unity Catalog catalog for the synced-table steps. The learner needs `CREATE SCHEMA` on it. If they don't have it, the lab skips the synced-table steps and says why; it doesn't fail.
-- `DO_SYNCED_TABLES` (default `True`): set to `False` to skip the synced-table steps on purpose.
-- `NEW_WORKSPACE_SECRETS` (default `None`): the name of a secret scope that holds another workspace's `host` and the learner's credentials there (`token`, or `client-id` and `client-secret` for a service principal). Set it, and the new home goes to that workspace (see "Two-workspace mode").
+1. `where`, the box **1. New home goes to**: `This workspace` (the default) or `Another workspace`.
+2. `other_url`, the box **2. Other workspace URL**: only for another workspace.
+3. `catalog`, the box **3. Catalog** (default `main`), for the synced-table steps: the learner needs `CREATE SCHEMA` on it. If they don't have it, the lab skips the synced-table steps and says why; it doesn't fail.
+
+Module 0's helpers cell, **Connect, name the two projects, and define helpers**, reads them: `CATALOG` from box 3, and `NEW_WORKSPACE_SECRETS = "lb-move-lab-<slug>"` when the answer is another workspace (otherwise `None`). One setting stays in the code there: `DO_SYNCED_TABLES` (default `True`), to skip the synced-table steps on purpose.
 - Names: the projects are `lb-move-old-<slug>-<user id>` and `lb-move-new-<slug>-<user id>`, where the slug is the part of the user name before `@`, lowercased, with anything else turned into hyphens, cut to 16 characters. The schema is `<catalog>.lb_move_<slug with underscores>`. The bundle is named `lb-move-lab` and keeps its state in `/Workspace/Users/<user>/.bundle/lb-move-lab`, in the new home's workspace.
 
 ## Before Module 0
+
+- **Choose your setup** puts the three boxes at the top (with the serverless image's own Databricks SDK, before the installs), then prints `✅ The new home goes in this workspace, as a second project. Nothing else to set up.` and the catalog. For another workspace, it creates the secret scope `lb-move-lab-<slug>` if it's missing, saves box 2's URL in it as `host`, and, if no token is stored, asks for one in a hidden box (Python's `getpass`, which shows a masked input under the cell). It signs in to check it, asking again up to twice if the token doesn't work, then prints `✅ The new home goes to another workspace, where you're signed in as <user there>.` In a job, nobody can answer the box: `getpass` raises `StdinNotImplementedError` right away, and the cell stops with the CLI command to store the token (tested). A service principal's `client-id` and `client-secret` in the scope work instead of a token.
 
 - The `%pip` cell installs `databricks-sdk>=0.81.0` (the first version with the Lakebase API, `w.postgres`), plain `psycopg>=3.1`, and `protobuf<6`. On older serverless versions pip may print a red dependency-conflict note about `protobuf` from a preinstalled package; it's harmless. The next cell restarts Python.
 
@@ -98,7 +102,7 @@ No code. A checklist for a real move: before the day, on the day, and after. See
 
 ## Two-workspace mode (optional)
 
-Set `NEW_WORKSPACE_SECRETS` to a secret scope in the lab's workspace that holds `host` (the other workspace's URL) and `token` (a personal access token the learner created there), or `client-id` and `client-secret` for a service principal. The old home stays in the lab's workspace; the new home, its bundle, its Postgres sign-in, and its cleanup go to the other workspace. Tested on October 2, 2026, from an AWS workspace to an Azure workspace, as a serverless job: all 79 cells passed. What's different in the output:
+Pick **Another workspace** in **Choose your setup**, put its URL in box 2, and run the cell: it asks for a personal access token from that workspace in a hidden box and keeps it in the secret scope `lb-move-lab-<slug>`. No CLI or code changes. The old home stays in the lab's workspace; the new home, its bundle, its Postgres sign-in, and its cleanup go to the other workspace. Module 7 deletes the scope at the end; the token keeps working until it expires, so revoke it there when done. Tested on October 2, 2026, from an AWS workspace to an Azure workspace, as serverless jobs: every cell passed. What's different in the output:
 
 - The helpers cell prints `New home: lb-move-new-... in [REDACTED] (another workspace, as <user there>)`. Databricks hides output that matches a secret, so the other workspace's URL shows as `[REDACTED]` everywhere.
 - The new home's computes are reached at their public address. On serverless, every Lakebase hostname resolved to the same Databricks proxy address, and the proxy refused the other workspace's computes (`FATAL: External authorization failed`). So `connect()` and `run_pg()` look up the compute's public IP in public DNS (dns.google, then cloudflare-dns.com) and pass it as libpq's `hostaddr` (`PGHOSTADDR` for the tools), with the hostname still sent for TLS.
@@ -115,8 +119,8 @@ Set `NEW_WORKSPACE_SECRETS` to a secret scope in the lab's workspace that holds 
 1. Serverless compute; Python packages (PyPI); PostgreSQL client tools (apt.postgresql.org); psycopg on the downloaded libpq; Databricks SDK and the Lakebase API; Databricks CLI (github.com); CLI signs in as you.
 2. No leftovers from an earlier lab run: the lab's projects, schema, or bundle folder. `CLEAN_LEFTOVERS = True` in its settings cell deletes them.
 3. On a throwaway project, `lb-move-pre-<slug>-<user id>-<timestamp>`, deployed with the lab's bundle shape: bundle deploys a Lakebase project; connect with a login token; create a second database; roles, ownership, and grants; pg_dump and a filtered pg_restore; child branch and its compute; point-in-time branch; snapshots (warning only).
-4. Schema and Delta table in the catalog, and synced table into Lakebase (both warnings only; set the **catalog** widget to the catalog the lab will use).
+4. Schema and Delta table in the catalog, and synced table into Lakebase (both warnings only; the catalog comes from box 3 of the preflight's own **Choose your setup** cell, which asks the lab's questions).
 5. prevent_destroy guards the bundle; cleanup.
-6. Only with its **new_workspace_secrets** widget set (to the lab's `NEW_WORKSPACE_SECRETS` scope), six more: second workspace sign-in; no leftovers there; a bundle deploys the throwaway project there; connect from here (at the compute's public address); restore this workspace's filtered dump there (all 100 rows); synced tables (a warning when the metastores differ). In the October 2 test, from an AWS workspace to an Azure workspace: 25 passed, 1 warning (separate metastores), and cleanup ran in both workspaces.
+6. Only when **Another workspace** is picked in its **Choose your setup** (which keeps the token in the same scope the lab uses), six more: second workspace sign-in; no leftovers there; a bundle deploys the throwaway project there; connect from here (at the compute's public address); restore this workspace's filtered dump there (all 100 rows); synced tables (a warning when the metastores differ). In the October 2 test, from an AWS workspace to an Azure workspace: 25 passed, 1 warning (separate metastores), and cleanup ran in both workspaces.
 
 Each run has its own names, so two preflights at once don't collide, and a run deletes preflight leftovers older than 30 minutes. The last cell prints the verdict (ready, ready with notes, or not ready) and returns the results as JSON for Genie Code or a job. The `lakebase-move-lab-preflight` skill runs it as a one-time serverless job, from a copy next to the current notebook if there is one, otherwise straight from the GitHub repo.

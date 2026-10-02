@@ -78,6 +78,9 @@ Tags: **[lab]** tested in the lab (October 1 and 2, 2026); **[runs]** tested in 
 - The notebook's bundle deploy, redeploy, and destroy ran against the other workspace, with the CLI signed in through the secret scope's token. [lab]
 - The two workspaces had separate metastores, so the lab skipped the synced table on the new side. Moving a synced table between two workspaces that share a metastore wasn't tested. [lab] [not tested]
 - The preflight with a second workspace: 25 checks passed and 1 warning (separate metastores), and its cleanup ran in both workspaces. [lab]
+- **Choose your setup** (the first code cell) puts three widgets at the top. In an interactive notebook, Databricks re-ran it on its own when the dropdown or the URL box changed. [lab]
+- On serverless, Python's `getpass` shows a masked input box under the cell in an interactive notebook, and what you type isn't echoed. In a job, it raises `StdinNotImplementedError` at once, so the lab stops with the CLI command to store the token instead of hanging. [lab]
+- A wrong token got the "That token didn't work in the other workspace" prompt; with a working token stored, the cell signed in and printed the user name there. [lab]
 
 ## Not tested
 
