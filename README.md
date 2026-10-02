@@ -177,7 +177,8 @@ October 1 and 2, 2026, in an AWS us-west-2 workspace:
   - the lab as jobs, in one workspace and with a second workspace: every cell passed; both databases' app schemas matched; the open-session check found no other session; with the second workspace, the normal route to its computes was refused, and the lab switched to their public address on its own;
   - a planted project with the lab's name and tag, and one with the lab's name but not its tag: the lab stopped at its first project cell with the matching message, and touched neither;
   - a run stopped on purpose right after Module 3's deploy, interactively as a workspace user: Module 7's two cells deleted both projects, the synced table, the schema, and the bundle folder, once in the same session and once after re-running the cells from the top through Module 0;
-  - the preflight: ✅ 20 of 20 in one workspace, and ⚠️ with a second workspace (25 passed, plus the separate-metastore note), reporting that the new home needed its public address.
+  - the preflight: ✅ 20 of 20 in one workspace, and ⚠️ with a second workspace (25 passed, plus the separate-metastore note), reporting that the new home needed its public address;
+  - Genie Code, after narrowing the expert skill's description: a Postgres upgrade question and a question about restoring a dump into a second root branch still loaded it, and questions about autoscaling sizes and service-principal OAuth access went to Genie Code's built-in Lakebase guidance instead.
 
 ## License
 
