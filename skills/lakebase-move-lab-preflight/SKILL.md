@@ -103,7 +103,7 @@ else:
 | Second workspace: sign-in | The lab can't use the second workspace | No token stored yet, or it doesn't work there. Have the user open the lab (or the preflight notebook) and run its first cell, **Choose your setup**, with **Another workspace** and the URL: it asks for a token in a hidden box. Then run this check again |
 | Second workspace: no leftovers from an earlier lab run | The lab trips over an old new-home project there | Run the lab's Module 7, or run the preflight notebook with `CLEAN_LEFTOVERS = True` |
 | Second workspace: bundle deploys a Lakebase project | The lab can't build its new home there | Permission to create Lakebase projects in that workspace, and a writable home folder there |
-| Second workspace: connect from here | No Postgres access to the new home | The notebook reaches that workspace's computes at their public address, found in public DNS (dns.google or cloudflare-dns.com); a timeout points at the serverless network policy |
+| Second workspace: connect from here | No Postgres access to the new home | The detail says which route worked: the normal one, or the compute's public address (found in dns.google or cloudflare-dns.com) after the normal route was refused. A timeout points at the serverless network policy |
 | Second workspace: restore a dump from this workspace | The move itself fails across workspaces | Send the error to the lab's owner |
 | Second workspace: synced tables (warning) | The other workspace has its own metastore, so the lab skips the synced table on the new side | Nothing to do for the lab; in a real move, copy the source Delta table over first |
 

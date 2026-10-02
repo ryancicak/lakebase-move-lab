@@ -36,7 +36,7 @@
 # DBTITLE 1,Choose your setup
 """The lab's setup questions, in boxes at the top. Answer them the way you will in the lab.
 
-For another workspace, its URL and your token go in a secret scope of your own, lb-move-lab-<you>.
+For another workspace, its URL and your token go in a secret scope of your own, lb-move-lab-<you>-<your user id>.
 The token is asked for in a hidden box. It's never shown, and it's never saved in the notebook.
 """
 import getpass
@@ -50,8 +50,9 @@ dbutils.widgets.text("other_url", "", "2. Other workspace URL")
 dbutils.widgets.text("catalog", "main", "3. Catalog")
 
 w = WorkspaceClient()
-user = w.current_user.me().user_name
-scope = "lb-move-lab-" + (re.sub(r"[^a-z0-9]+", "-", user.split("@")[0].lower()).strip("-")[:16].rstrip("-") or "user")
+me = w.current_user.me()
+slug = re.sub(r"[^a-z0-9]+", "-", me.user_name.split("@")[0].lower()).strip("-")[:16].rstrip("-") or "user"
+scope = f"lb-move-lab-{slug}-{me.id}"  # your user id keeps it yours, even when user names start alike
 
 
 def ask_for_token(prompt):
@@ -394,35 +395,47 @@ def schema_exists(full_name):
         return False
 
 
+LAB_LABELS = {"old": "Lakebase move lab: old home", "new": "Lakebase move lab: new home"}  # the lab's name tags
+
+
+def made_by_lab(pid, label, ws=None):
+    """True if the project carries the name tag the lab gives the projects it makes."""
+    return (ws or w).postgres.get_project(name=f"projects/{pid}").status.display_name == label
+
+
 if SDK_OK:
-    LAB_PROJECTS = [f"lb-move-old-{slug}-{me.id}", f"lb-move-new-{slug}-{me.id}"]
-    LAB_SCHEMA = f"{CATALOG}.lb_move_{slug.replace('-', '_')}"
+    LAB_PROJECTS = {f"lb-move-old-{slug}-{me.id}": LAB_LABELS["old"], f"lb-move-new-{slug}-{me.id}": LAB_LABELS["new"]}
+    LAB_SCHEMA = f"{CATALOG}.lb_move_{slug.replace('-', '_')}_{me.id}"
     LAB_BUNDLE_ROOT = f"/Workspace/Users/{USER}/.bundle/lb-move-lab"
 
 
 @check("No leftovers from an earlier lab run",
-       "Run the lab's Module 7 (clean up), or set CLEAN_LEFTOVERS = True in this notebook's settings cell and run the check again.",
+       "Run the lab's Module 7 (clean up), or set CLEAN_LEFTOVERS = True in this notebook's settings cell and run the "
+       "check again. A project the lab didn't make is never deleted: delete or rename it yourself.",
        needs=(SDK_CHECK,))
 def _():
-    found = [f"project {pid}" for pid in LAB_PROJECTS if project_exists(pid)]
+    projects = {pid: made_by_lab(pid, label) for pid, label in LAB_PROJECTS.items() if project_exists(pid)}
+    found = [f"project {pid}" + ("" if ours else " (not made by the lab)") for pid, ours in projects.items()]
     found += [f"schema {LAB_SCHEMA}"] if schema_exists(LAB_SCHEMA) else []
     found += [f"bundle folder {LAB_BUNDLE_ROOT}"] if folder_exists(LAB_BUNDLE_ROOT) else []
     if not found:
         return "nothing found"
     if not CLEAN_LEFTOVERS:
-        raise RuntimeError("found " + ", ".join(found) + " from an earlier (or still running) lab run. "
-                           "The lab would trip over them instead of starting clean.")
+        raise RuntimeError("found " + ", ".join(found) + ". The lab stops on these instead of reusing or deleting them.")
     try:
         w.postgres.delete_synced_table(name=f"synced_tables/{LAB_SCHEMA}.product_catalog_synced").wait()
     except Exception:
         pass
-    for pid in LAB_PROJECTS:
-        if project_exists(pid):
+    for pid, ours in projects.items():
+        if ours:
             w.postgres.delete_project(name=f"projects/{pid}", purge=True).wait()
     if schema_exists(LAB_SCHEMA):
         spark.sql(f"DROP SCHEMA IF EXISTS {LAB_SCHEMA} CASCADE")
     if folder_exists(LAB_BUNDLE_ROOT):
         w.workspace.delete(LAB_BUNDLE_ROOT, recursive=True)
+    others = [pid for pid, ours in projects.items() if not ours]
+    if others:
+        raise RuntimeError(f"left {', '.join(others)} alone, because the lab didn't make it. Delete or rename it yourself.")
     return "deleted " + ", ".join(found)
 
 # COMMAND ----------
@@ -547,12 +560,11 @@ def endpoint_of(branch, timeout=300, ws=None):
         time.sleep(5)
 
 
-def public_address(host):
-    """A compute's public IP, from public DNS (the lab's way to reach computes in another workspace).
+ROUTES = {}  # a second-workspace compute's host -> its public IP if the normal route was refused, else None
 
-    On serverless, every Lakebase hostname resolves to a Databricks proxy, and in testing that proxy refused
-    another workspace's computes.
-    """
+
+def public_address(host):
+    """A compute's public IP, from public DNS."""
     for url in (f"https://dns.google/resolve?name={host}&type=A",
                 f"https://cloudflare-dns.com/dns-query?name={host}&type=A"):
         try:
@@ -569,16 +581,24 @@ def public_address(host):
 def connect(branch, dbname=DB, ws=None):
     """Open a Postgres connection with a fresh login token. Retries while the compute wakes up.
 
-    ws is the other workspace's sign-in, for its computes; they're reached at their public address, as in the lab.
+    ws is the other workspace's sign-in, for its computes. As in the lab, the normal route comes first; on
+    "External authorization failed" (which a Databricks proxy answered in testing), it switches that compute
+    to its public address.
     """
     endpoint, host = endpoint_of(branch, ws=ws)
     token = (ws or w).postgres.generate_database_credential(endpoint=endpoint).token
-    extra = {"hostaddr": public_address(host)} if ws else {}
     for attempt in range(6):
         try:
-            return psycopg.connect(host=host, dbname=dbname, user=NEW_USER if ws else USER, password=token,
-                                   sslmode="require", connect_timeout=30, autocommit=True, **extra)
-        except psycopg.OperationalError:
+            conn = psycopg.connect(host=host, dbname=dbname, user=NEW_USER if ws else USER, password=token,
+                                   sslmode="require", connect_timeout=30, autocommit=True,
+                                   **({"hostaddr": ROUTES[host]} if ROUTES.get(host) else {}))
+            if ws:
+                ROUTES.setdefault(host, None)
+            return conn
+        except psycopg.OperationalError as e:
+            if ws and host not in ROUTES and "External authorization failed" in str(e):
+                ROUTES[host] = public_address(host)
+                continue
             if attempt == 5:
                 raise
             time.sleep(10)
@@ -587,11 +607,13 @@ def connect(branch, dbname=DB, ws=None):
 def run_pg(tool, branch, args, dbname=DB, ws=None):
     """Run pg_dump or pg_restore against one database. The token goes in the environment, never on screen."""
     endpoint, host = endpoint_of(branch, ws=ws)
+    if ws and host not in ROUTES:
+        connect(branch, dbname, ws=ws).close()  # finds out which route this compute needs
     token = (ws or w).postgres.generate_database_credential(endpoint=endpoint).token
     env = dict(PG_ENV, PGHOST=host, PGPORT="5432", PGUSER=NEW_USER if ws else USER, PGPASSWORD=token,
                PGDATABASE=dbname, PGSSLMODE="require")
-    if ws:
-        env["PGHOSTADDR"] = public_address(host)  # libpq still sends the hostname for TLS
+    if ROUTES.get(host):
+        env["PGHOSTADDR"] = ROUTES[host]  # libpq still sends the hostname for TLS
     result = subprocess.run([str(PG_BIN / tool), *args], env=env, capture_output=True, text=True)
     return result.returncode, result.stderr.strip()
 
@@ -763,7 +785,7 @@ NEW_SIGN_IN, NEW_BUNDLE = "Second workspace: sign-in", "Second workspace: bundle
 NEW_CONNECT = "Second workspace: connect from here"
 BUNDLE_DIR_NEW = Path(tempfile.mkdtemp(prefix="lb_pre_bundle_new_"))
 w_new = None
-NEW_SCOPE = f"lb-move-lab-{slug}" if SECOND_WORKSPACE and SDK_OK else ""  # where Choose your setup keeps it
+NEW_SCOPE = f"lb-move-lab-{slug}-{me.id}" if SECOND_WORKSPACE and SDK_OK else ""  # where Choose your setup keeps it
 
 if not SECOND_WORKSPACE:
     print("The new home goes in this workspace, so there's nothing to check here.")
@@ -771,7 +793,7 @@ else:
     @check(NEW_SIGN_IN,
            "Run this notebook's first code cell, Choose your setup, interactively, with the other workspace's URL in "
            "box 2: it asks for a token in a hidden box. Or store one with the Databricks CLI: databricks secrets "
-           f"put-secret {NEW_SCOPE or 'lb-move-lab-<you>'} token",
+           f"put-secret {NEW_SCOPE or 'lb-move-lab-<you>-<your user id>'} token",
            needs=(SDK_CHECK,))
     def _():
         global w_new, NEW_USER
@@ -800,21 +822,25 @@ else:
 
     @check("Second workspace: no leftovers from an earlier lab run",
            "Run the lab's Module 7 (clean up), or set CLEAN_LEFTOVERS = True in this notebook's settings cell and run "
-           "the check again.",
+           "the check again. A project the lab didn't make is never deleted: delete or rename it yourself.",
            needs=(NEW_SIGN_IN, SDK_CHECK))
     def _():
         lab_new, lab_root = f"lb-move-new-{slug}-{me.id}", f"/Workspace/Users/{NEW_USER}/.bundle/lb-move-lab"
-        found = [f"project {lab_new}"] if project_exists(lab_new, w_new) else []
+        there = project_exists(lab_new, w_new)
+        ours = there and made_by_lab(lab_new, LAB_LABELS["new"], w_new)
+        found = [f"project {lab_new}" + ("" if ours else " (not made by the lab)")] if there else []
         found += [f"bundle folder {lab_root}"] if folder_exists(lab_root, w_new) else []
         if not found:
             return "nothing found"
         if not CLEAN_LEFTOVERS:
-            raise RuntimeError("found " + ", ".join(found) + " in the second workspace, from an earlier (or still "
-                               "running) lab run. The lab would trip over them instead of starting clean.")
-        if project_exists(lab_new, w_new):
+            raise RuntimeError("found " + ", ".join(found) + " in the second workspace. The lab stops on these instead "
+                               "of reusing or deleting them.")
+        if ours:
             w_new.postgres.delete_project(name=f"projects/{lab_new}", purge=True).wait()
         if folder_exists(lab_root, w_new):
             w_new.workspace.delete(lab_root, recursive=True)
+        if there and not ours:
+            raise RuntimeError(f"left {lab_new} alone, because the lab didn't make it. Delete or rename it yourself.")
         return "deleted " + ", ".join(found)
 
     @check(NEW_BUNDLE,
@@ -837,13 +863,17 @@ else:
         return f"{PRE_ID} deployed in the second workspace"
 
     @check(NEW_CONNECT,
-           "This notebook has to reach the other workspace's computes at their public address on port 5432, and look "
-           "them up in public DNS (dns.google or cloudflare-dns.com). A timeout points at the serverless network policy.",
+           "This notebook has to reach the other workspace's computes on port 5432, by the normal route or at their "
+           "public address (looked up in dns.google or cloudflare-dns.com). A timeout points at the serverless "
+           "network policy.",
            needs=(NEW_BUNDLE, "psycopg on the downloaded libpq"))
     def _():
         with connect("production", ws=w_new) as conn:
             user, version = conn.execute("SELECT current_user, current_setting('server_version')").fetchone()
-        return f"connected as {user}, Postgres {version}, at the compute's public address"
+        host = endpoint_of("production", ws=w_new)[1]
+        route = ("at its public address, because the normal route was refused" if ROUTES.get(host)
+                 else "by the normal route")
+        return f"connected as {user}, Postgres {version}, {route}"
 
     @check("Second workspace: restore a dump from this workspace",
            "This is the move itself, across workspaces. Send the error to the lab's owner.",
@@ -888,7 +918,7 @@ from databricks.sdk.service.postgres import (
 
 SCHEMA_CHECK = f"Schema and Delta table in {CATALOG}"
 if SDK_OK:
-    schema_prefix = f"lb_move_pre_{slug.replace('-', '_')}_"
+    schema_prefix = f"lb_move_pre_{slug.replace('-', '_')}_{me.id}_"  # your user id: cleanup only finds yours
     PRE_SCHEMA = f"{CATALOG}.{schema_prefix}{RUN_TAG}"
     PRE_SOURCE, PRE_SYNCED = f"{PRE_SCHEMA}.preflight_source", f"{PRE_SCHEMA}.preflight_synced"
     try:  # delete schemas an earlier preflight of yours left behind, if they're over 30 minutes old

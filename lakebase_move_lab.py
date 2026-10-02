@@ -32,7 +32,7 @@
 # MAGIC
 # MAGIC > It runs on Databricks serverless (environment version 5) in about 5 minutes. It installs what it needs as it goes, creates two small Lakebase projects, and deletes them at the end.
 # MAGIC
-# MAGIC > **Two projects stand in for two workspaces.** A branch can't leave its project, even inside one workspace. So moving between two projects is the same job as moving between workspaces. Where a real move between workspaces is different, the lab says so. Have a second workspace? Pick it in **Choose your setup**, a few cells down.
+# MAGIC > **Two projects stand in for two workspaces.** A branch can't leave its project, even inside one workspace, so moving between two projects teaches the same core rebuild pattern as moving between workspaces. A real move between workspaces adds a few things, like other identities, another metastore, and a different network path, and the lab calls them out where they come up. Have a second workspace? Pick it in **Choose your setup**, a few cells down, and do the real thing.
 
 # COMMAND ----------
 
@@ -41,7 +41,8 @@
 # MAGIC
 # MAGIC * **Use serverless compute.** The notebook asks for environment version 5, and versions 1 through 4 passed too. A classic cluster with internet access should work, but we haven't tested one.
 # MAGIC * **You need permission to create Lakebase projects.**
-# MAGIC * **Run the cells in order.** Each one prints what it did, so you can stop and look anytime.
+# MAGIC * **Pick how you'll go through it.** **Guided**, best for learning: run one cell at a time with Shift+Enter, and read the text above each cell first. **Demo**: click **Run all** and read along as the outputs come in. It takes about 5 minutes either way, plus your reading time.
+# MAGIC * **If a run stops partway, clean up.** Jump to **Module 7** at the bottom and run its two cells. They delete whatever the lab made, even from a half-finished run. (If the notebook has restarted or detached since, first run the cells from the top through **Module 0**.)
 # MAGIC
 # MAGIC ### Choose your setup
 # MAGIC
@@ -53,16 +54,16 @@
 # MAGIC 2. **Other workspace URL**: only for another workspace, for example `https://adb-1234567890123456.7.azuredatabricks.net`.
 # MAGIC 3. **Catalog**: for the synced-table steps, one where you can create a schema. The default is `main`. If you can't create a schema there, no problem: the lab skips those steps and tells you why.
 # MAGIC
-# MAGIC Change a box, then run the cell again. If you picked another workspace, it asks for the token in a hidden box the first time, keeps it in a secret scope of your own, and checks that it works. Then click **Run all**.
+# MAGIC Change a box, then run the cell again. If you picked another workspace, it asks for the token in a hidden box the first time, keeps it in a secret scope of your own, and checks that it works. Then go through the lab, cell by cell or with **Run all**.
 # MAGIC
-# MAGIC > With another workspace, a few things work differently. Serverless sends Lakebase hostnames to a Databricks proxy, which refused the other workspace's computes in testing, so the lab connects to their public address instead (found in public DNS). If that workspace has its own metastore, the lab skips the synced table on the new side, because its Delta source would have to be copied over first. And Databricks hides anything that matches a secret, so that workspace's URL shows up as `[REDACTED]` in the output.
+# MAGIC > With another workspace, a few things work differently. In our test, with serverless in an AWS workspace and the new home in an Azure one, Lakebase hostnames went to a Databricks proxy that refused the other workspace's computes. So the lab tries the normal route first, and if it's refused, connects to the compute's public address (found in public DNS). If that workspace has its own metastore, the lab skips the synced table on the new side, because its Delta source would have to be copied over first. And Databricks hides anything that matches a secret, so that workspace's URL shows up as `[REDACTED]` in the output.
 
 # COMMAND ----------
 
 # DBTITLE 1,Choose your setup
 """Put the setup questions at the top of the notebook, and sign you in to the other workspace if you pick one.
 
-For another workspace, its URL and your token go in a secret scope of your own, lb-move-lab-<you>.
+For another workspace, its URL and your token go in a secret scope of your own, lb-move-lab-<you>-<your user id>.
 The token is asked for in a hidden box. It's never shown, and it's never saved in the notebook.
 """
 import getpass
@@ -76,8 +77,9 @@ dbutils.widgets.text("other_url", "", "2. Other workspace URL")
 dbutils.widgets.text("catalog", "main", "3. Catalog")
 
 w = WorkspaceClient()
-user = w.current_user.me().user_name
-scope = "lb-move-lab-" + (re.sub(r"[^a-z0-9]+", "-", user.split("@")[0].lower()).strip("-")[:16].rstrip("-") or "user")
+me = w.current_user.me()
+slug = re.sub(r"[^a-z0-9]+", "-", me.user_name.split("@")[0].lower()).strip("-")[:16].rstrip("-") or "user"
+scope = f"lb-move-lab-{slug}-{me.id}"  # your user id keeps it yours, even when user names start alike
 
 
 def ask_for_token(prompt):
@@ -285,7 +287,7 @@ print(subprocess.run([str(CLI), "--version"], capture_output=True, text=True).st
 # MAGIC
 # MAGIC * **Connects to Databricks.** In Lakebase, **your Databricks identity is your Postgres user**, and you log in with a short-lived token instead of a password. Every connection here gets a fresh token, so nothing expires mid-lab.
 # MAGIC * **Names the two projects after you**, so a whole team can run the lab in one workspace: `lb-move-old-…` is the **old home** and `lb-move-new-…` is the **new home**.
-# MAGIC * **Sets up helpers** we'll reuse. One takes a database's **fingerprint**: a row count plus a checksum of every row, for each table. That's how we'll prove two copies are identical.
+# MAGIC * **Sets up helpers** we'll reuse. One takes a database's **fingerprint**: a row count plus a checksum of every row, for each table. That's how we'll prove two copies have the same rows.
 # MAGIC * **Defines the app's migrations:** numbered SQL changes, run in order and recorded in a history table. That's what Flyway or Liquibase does for a real app.
 # MAGIC
 # MAGIC > Your answers from **Choose your setup** land here: `CATALOG`, and `NEW_WORKSPACE_SECRETS` if the new home goes to another workspace.
@@ -347,7 +349,7 @@ def answer(name, default):
 
 # From Choose your setup. For another workspace, its URL and your credentials there are in a secret scope
 # of your own: "host", plus "token", or "client-id" and "client-secret" for a service principal.
-NEW_WORKSPACE_SECRETS = f"lb-move-lab-{slug}" if answer("where", "") == "Another workspace" else None
+NEW_WORKSPACE_SECRETS = f"lb-move-lab-{slug}-{me.id}" if answer("where", "") == "Another workspace" else None
 
 
 def sign_in_elsewhere(scope):
@@ -375,6 +377,8 @@ NEW_USER = w_new.current_user.me().user_name if TWO_WORKSPACES else USER  # your
 # Unique, readable names: your user name plus your numeric user id.
 OLD_ID = f"lb-move-old-{slug}-{me.id}"  # the old home, in this workspace
 NEW_ID = f"lb-move-new-{slug}-{me.id}"  # the new home, in this workspace or the other one
+OLD_LABEL, NEW_LABEL = "Lakebase move lab: old home", "Lakebase move lab: new home"  # marks the projects the lab makes
+LAB_CREATED = set()  # what this session made: re-running a cell reuses it, but nothing older gets reused
 DB = "databricks_postgres"  # the default database in every Lakebase project
 REPORTING_DB = "reporting"  # a second database the app uses (Module 1, Step 3)
 
@@ -386,7 +390,7 @@ BUNDLE_ROOT = f"/Workspace/Users/{NEW_USER}/.bundle/{BUNDLE_NAME}"  # in the new
 # Optional synced-table steps (Module 1, Step 6 and Module 4, Step 4).
 DO_SYNCED_TABLES = True
 CATALOG = answer("catalog", "main")  # from Choose your setup: a catalog where you can create a schema
-UC_SCHEMA = "lb_move_" + slug.replace("-", "_")
+UC_SCHEMA = f"lb_move_{slug.replace('-', '_')}_{me.id}"  # your user id keeps it yours
 SOURCE_TABLE = f"{CATALOG}.{UC_SCHEMA}.product_catalog"  # a lakehouse (Delta) table
 SYNCED_TABLE = f"{CATALOG}.{UC_SCHEMA}.product_catalog_synced"  # its copy inside Lakebase
 
@@ -415,14 +419,32 @@ def project_exists(pid):
     return any(p.name == project_path(pid) for p in client(pid).postgres.list_projects())
 
 
+def claim(pid, label):
+    """Stop if a project with this name exists but wasn't made in this session.
+
+    A leftover from an earlier run, or someone else's project with the same name, is never reused,
+    so the lab's cleanup only ever deletes what the lab made.
+    """
+    if pid in LAB_CREATED or not project_exists(pid):
+        return
+    found = client(pid).postgres.get_project(name=project_path(pid)).status.display_name
+    if found == label:
+        raise RuntimeError(f"Project {pid} is left over from an earlier run of this lab. Run Module 7 (Clean up) "
+                           "to delete it, then start again.")
+    raise RuntimeError(f"A project named {pid} already exists, and this lab didn't make it (it's called {found!r}). "
+                       "Delete or rename it, then start again.")
+
+
 def create_project(pid, label):
-    """Create a Postgres project (or reuse it). It comes with a production branch and its compute."""
-    if project_exists(pid):
-        print(f"Reusing project {pid}")
+    """Create a Postgres project, or reuse the one this session made. It comes with a production branch and its compute."""
+    claim(pid, label)
+    if pid in LAB_CREATED:
+        print(f"Reusing project {pid}, made earlier in this session")
         return
     client(pid).postgres.create_project(
         project=Project(spec=ProjectSpec(display_name=label, pg_version=PG_VERSION)), project_id=pid
     ).wait()
+    LAB_CREATED.add(pid)
     print(f"Created project {pid} (Postgres {PG_VERSION})")
 
 
@@ -469,14 +491,11 @@ def login(pid, branch):
     return host, client(pid).postgres.generate_database_credential(endpoint=endpoint).token
 
 
-def public_address(pid, host):
-    """The public IP of a compute in another workspace, or None for computes in this one.
+ROUTES = {}  # a new-home compute's host -> its public IP if the normal route was refused, else None
 
-    On serverless, every Lakebase hostname resolves to a Databricks proxy, and in testing that proxy refused
-    another workspace's computes. Their public address works, so we look it up in public DNS.
-    """
-    if pid != NEW_ID or not TWO_WORKSPACES:
-        return None
+
+def public_address(host):
+    """A compute's public IP, from public DNS."""
     for url in (f"https://dns.google/resolve?name={host}&type=A",
                 f"https://cloudflare-dns.com/dns-query?name={host}&type=A"):
         try:
@@ -491,15 +510,28 @@ def public_address(pid, host):
 
 
 def connect(pid, branch, dbname=DB):
-    """Open a Postgres connection to one database on a branch. Retries while the compute wakes up."""
+    """Open a Postgres connection to one database on a branch. Retries while the compute wakes up.
+
+    For a compute in another workspace, the normal route comes first. In testing (serverless in an AWS workspace,
+    computes in an Azure one), Lakebase hostnames resolved to a Databricks proxy that refused them with
+    "External authorization failed", and the compute's public address worked. So on that error, the lab
+    switches that compute to its public address.
+    """
     host, token = login(pid, branch)
-    address = public_address(pid, host)
+    elsewhere = TWO_WORKSPACES and pid == NEW_ID
     for attempt in range(6):
         try:
-            return psycopg.connect(host=host, dbname=dbname, user=pg_user(pid), password=token,
-                                   sslmode="require", connect_timeout=30, autocommit=True,
-                                   **({"hostaddr": address} if address else {}))
-        except psycopg.OperationalError:
+            conn = psycopg.connect(host=host, dbname=dbname, user=pg_user(pid), password=token, sslmode="require",
+                                   connect_timeout=30, autocommit=True,
+                                   **({"hostaddr": ROUTES[host]} if ROUTES.get(host) else {}))
+            if elsewhere:
+                ROUTES.setdefault(host, None)
+            return conn
+        except psycopg.OperationalError as e:
+            if elsewhere and host not in ROUTES and "External authorization failed" in str(e):
+                ROUTES[host] = public_address(host)
+                print("(The normal route to a new-home compute was refused, so the lab uses its public address.)")
+                continue
             if attempt == 5:
                 raise
             time.sleep(10)
@@ -533,11 +565,12 @@ def create_database(pid, branch, name):
 def run_pg(tool, pid, branch, args, dbname=DB):
     """Run pg_dump or pg_restore against one database on a branch. The token goes in the environment, never on screen."""
     host, token = login(pid, branch)
+    if TWO_WORKSPACES and pid == NEW_ID and host not in ROUTES:
+        connect(pid, branch, dbname).close()  # finds out which route this compute needs
     env = dict(PG_ENV, PGHOST=host, PGPORT="5432", PGUSER=pg_user(pid), PGPASSWORD=token,
                PGDATABASE=dbname, PGSSLMODE="require")
-    address = public_address(pid, host)
-    if address:
-        env["PGHOSTADDR"] = address  # libpq still sends the hostname for TLS
+    if ROUTES.get(host):
+        env["PGHOSTADDR"] = ROUTES[host]  # libpq still sends the hostname for TLS
     started = time.time()
     result = subprocess.run([str(PG_BIN / tool), *args], env=env, capture_output=True, text=True)
     return result.returncode, round(time.time() - started, 1), result.stderr.strip()
@@ -639,7 +672,7 @@ print("New home:", NEW_ID, "in", w_new.config.host + (f" (another workspace, as 
 
 # DBTITLE 1,Create the old home's project
 """Create (or reuse) the old home's project, then wait for its production compute to get a host."""
-create_project(OLD_ID, "Lakebase move lab: old home")
+create_project(OLD_ID, OLD_LABEL)
 print("Production compute:", endpoint_of(OLD_ID, "production")[1])
 
 # COMMAND ----------
@@ -810,6 +843,28 @@ def wait_for_sync(pid, synced_name, pg_table, expected_rows, timeout=900):
         time.sleep(15)
 
 
+def create_synced_table(pid, attempts=1):
+    """Create the lab's synced table on a project's production. Retries while a just-deleted name is released."""
+    for attempt in range(attempts):
+        try:
+            client(pid).postgres.create_synced_table(
+                synced_table=SyncedTable(spec=SyncedTableSyncedTableSpec(
+                    source_table_full_name=SOURCE_TABLE,
+                    branch=branch_path(pid, "production"),
+                    postgres_database=DB,
+                    primary_key_columns=["product_id"],
+                    scheduling_policy=SyncedTableSyncedTableSpecSyncedTableSchedulingPolicy.SNAPSHOT,
+                    create_database_objects_if_missing=True)),
+                synced_table_id=SYNCED_TABLE).wait()
+            LAB_CREATED.add(SYNCED_TABLE)
+            return
+        except Exception as e:
+            if attempt == attempts - 1:
+                raise
+            print("  name still being released, retrying:", str(e)[:120])
+            time.sleep(20)
+
+
 if DO_SYNCED_TABLES:
     try:
         spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{UC_SCHEMA}")
@@ -822,23 +877,25 @@ if DO_SYNCED_TABLES:
                       f"FROM range(1, 51)")
         try:
             w.postgres.get_synced_table(name=f"synced_tables/{SYNCED_TABLE}")
-            print("The synced table already exists, so we reuse it.")
+            exists = True
         except Exception:
-            w.postgres.create_synced_table(
-                synced_table=SyncedTable(spec=SyncedTableSyncedTableSpec(
-                    source_table_full_name=SOURCE_TABLE,
-                    branch=branch_path(OLD_ID, "production"),
-                    postgres_database=DB,
-                    primary_key_columns=["product_id"],
-                    scheduling_policy=SyncedTableSyncedTableSpecSyncedTableSchedulingPolicy.SNAPSHOT,
-                    create_database_objects_if_missing=True)),
-                synced_table_id=SYNCED_TABLE).wait()
+            exists = False
+        if exists and SYNCED_TABLE in LAB_CREATED:
+            print("The synced table already exists from earlier in this session, so we reuse it.")
+        else:
+            if exists:  # its name has your user id in it, so it's yours: a leftover from an earlier run
+                w.postgres.delete_synced_table(name=f"synced_tables/{SYNCED_TABLE}").wait()
+                print("Deleted a synced table left over from an earlier run.")
+            create_synced_table(OLD_ID, attempts=10 if exists else 1)
             print("Create call returned. Waiting for the rows to land...")
         state, rows, secs = wait_for_sync(OLD_ID, SYNCED_TABLE, f"{UC_SCHEMA}.product_catalog_synced", 50)
         print(f"Synced: {rows} rows in Postgres, state {state}, after {secs} s")
     except Exception as e:
         DO_SYNCED_TABLES = False
-        print("Skipping the synced-table steps:", str(e)[:300])
+        expected = any(s in str(e) for s in ("PERMISSION_DENIED", "NO_SUCH_CATALOG", "CATALOG_NOT_FOUND"))
+        print("Skipping the synced-table steps:" if expected else
+              "Skipping the synced-table steps after an unexpected error. The rest of the lab still runs; please "
+              "report this one:", f"{type(e).__name__}: {' '.join(str(e).split())[:800]}")
 else:
     print("Skipped (DO_SYNCED_TABLES = False)")
 
@@ -928,6 +985,7 @@ resources:
   postgres_projects:
     app:
       project_id: {NEW_ID}
+      display_name: "{NEW_LABEL}"           # how cleanup knows the lab made it
       pg_version: {PG_VERSION}
       history_retention_duration: 604800s   # the restore window: 7 days
       purge_on_delete: true                 # lab only: frees the name as soon as it's deleted{lifecycle}
@@ -969,10 +1027,12 @@ print(write_bundle())
 
 # DBTITLE 1,Step 2: databricks bundle validate, then deploy
 """Validate and deploy the bundle, the same commands you'd run from a laptop or CI."""
+claim(NEW_ID, NEW_LABEL)  # never adopt a leftover new home from an earlier run
 for args in (["bundle", "validate"], ["bundle", "deploy"]):
     rc, out = cli(*args)
     print(f"$ databricks {' '.join(args)}\n{out}\n")
     assert rc == 0, f"databricks {' '.join(args)} failed"
+LAB_CREATED.add(NEW_ID)
 
 # COMMAND ----------
 
@@ -1021,26 +1081,45 @@ except Exception as e:
 # MAGIC %md
 # MAGIC ## Module 4: Move the data
 # MAGIC
+# MAGIC > **Where we are.** The old home has production (two databases, access rules, and a synced table) and a dev branch with unreleased work. The new home has the same project and branches, built by the bundle, but its production is empty and un-migrated. Now we pause writes, copy each database over, check the copy, rebuild access, and switch the app. Then we rebuild the dev branch.
+# MAGIC
 # MAGIC This is steps 3 to 5. With a live app, you pause writes before step 3. After step 4, you rebuild access, run a final check (the verification gate), switch the app, and resume writes. Step 5, the child branches, can wait until the app is live again.
 # MAGIC
-# MAGIC ### The app is live: write, then pause
+# MAGIC ### The app is live: write, then pause (simulated)
 # MAGIC
 # MAGIC In real life, the app keeps writing to old production, so let's place a few new orders. Then we **pause writes** and take a **watermark**: the newest order ID and the row count. After the move, the new side has to match those numbers exactly.
 # MAGIC
-# MAGIC > In a real cutover, stop **every** writer: the app, jobs, scripts, and any app on a child branch. Make sure nothing is mid-transaction, then take the watermark. There's no live replication between projects, so anything written after the dump is lost.
+# MAGIC In this lab, the pause is a simulation: our pretend app just stops placing orders. The cell then checks that no other session is running a statement or holding a transaction open, and stops the lab if one is.
+# MAGIC
+# MAGIC > In a real cutover, you do the stopping, and there's no live replication between projects, so anything written after the dump is lost:
+# MAGIC >
+# MAGIC > 1. **Stop every writer:** the app, jobs and schedules, scripts, and any app on a child branch.
+# MAGIC > 2. **Keep them stopped.** For example, take write access away from the app's role (`REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA app FROM <app role>`) or end its sessions with `pg_terminate_backend`. (We haven't tested these in this lab.)
+# MAGIC > 3. **Check:** no session running a statement or holding a transaction open (this cell's check), and the watermark doesn't move for a minute. Then take the watermark.
 
 # COMMAND ----------
 
-# DBTITLE 1,Place a few orders, then pause writes and take a watermark
-"""Simulate the live app, then pause writes: record the newest order and the count, and check for other sessions."""
+# DBTITLE 1,Place a few orders, then pause writes (simulated) and take a watermark
+"""Simulate the live app, then pause writes: record the newest order and the count, and stop if anything else is writing."""
 with connect(OLD_ID, "production") as conn:
     conn.execute("INSERT INTO app.orders (customer_id, amount_cents) SELECT 1 + g, 1999 FROM generate_series(1, 25) g")
     WATERMARK = conn.execute("SELECT max(order_id), count(*) FROM app.orders").fetchone()
-    busy = conn.execute("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-                        "AND pid <> pg_backend_pid() AND state = 'active' AND backend_type = 'client backend'").fetchone()[0]
 PAUSE_STARTED = time.time()
-print(f"Writes paused. Watermark: newest order_id {WATERMARK[0]}, {WATERMARK[1]} orders.")
-print(f"Other active sessions right now: {busy}")
+print(f"Writes paused (simulated: our pretend app just stops). Watermark: newest order_id {WATERMARK[0]}, "
+      f"{WATERMARK[1]} orders.")
+
+# The check a real cutover needs: no other session may be running a statement or holding a transaction open.
+OPEN_SESSIONS = ("SELECT count(*) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND backend_type = 'client backend' "
+                 "AND datname = ANY(%s) AND state IN ('active', 'idle in transaction', 'idle in transaction (aborted)')")
+with connect(OLD_ID, "production") as conn:
+    for attempt in range(4):  # give a passing query a few seconds to finish
+        busy = conn.execute(OPEN_SESSIONS, ([DB, REPORTING_DB],)).fetchone()[0]
+        if not busy:
+            break
+        time.sleep(5)
+assert not busy, (f"Don't dump yet: {busy} other session(s) are running a statement or holding a transaction open. "
+                  "Stop them, then run this cell again.")
+print("No other session is running a statement or holding a transaction open.")
 
 # COMMAND ----------
 
@@ -1156,12 +1235,26 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **Now prove it.** We compare fingerprints table by table, in every database, then check the watermark and the migration history. Every row's checksum should match.
+# MAGIC **Now prove it.** In every database, we compare the app schema's definitions (tables, columns, keys, indexes, constraints, and sequences, from a schema-only dump of each side), then every app table's fingerprint, then the watermark and the migration history. Everything should match. (Access, history, and synced tables aren't in this check, because they don't come along: that's the next few steps.)
 
 # COMMAND ----------
 
 # DBTITLE 1,Compare old and new production, database by database
-"""Fingerprint every table in every moved database on both sides, then check the watermark and history."""
+"""Compare the app schema's definitions and every app table's fingerprint on both sides, then the watermark and history."""
+def schema_definitions(pid, dbname):
+    """The app schema's definitions from a schema-only dump, without owners, grants, and the dump's own lines."""
+    path = WORK_DIR / f"schema_{pid}_{dbname}.sql"
+    rc, secs, err = run_pg("pg_dump", pid, "production",
+                           ["--schema-only", "--no-owner", "--no-acl", "-n", "app", "-f", str(path)], dbname=dbname)
+    assert rc == 0, f"pg_dump --schema-only of {dbname} failed: {err}"
+    return [l for l in path.read_text().splitlines()
+            if l.strip() and not l.startswith(("--", "\\restrict", "\\unrestrict", "SET ", "SELECT pg_catalog."))]
+
+
+schemas_match = {db: schema_definitions(OLD_ID, db) == schema_definitions(NEW_ID, db) for db in APP_DATABASES}
+for db, same in schemas_match.items():
+    print(f"{db}: app schema definitions {'match' if same else 'DIFFER'}")
+
 frames = []
 for db in APP_DATABASES:
     merged = fingerprint(OLD_ID, "production", db).merge(
@@ -1175,9 +1268,10 @@ new_mark = query(NEW_ID, "production", "SELECT max(order_id) AS newest, count(*)
 print(f"Watermark: old {WATERMARK[0]} / {WATERMARK[1]}   new {new_mark.newest} / {new_mark.orders}")
 print("Migration history on new production:",
       query(NEW_ID, "production", "SELECT version FROM app.schema_migrations ORDER BY 1")["version"].tolist())
-assert compare.identical.all() and new_mark.newest == WATERMARK[0], (
+assert all(schemas_match.values()) and compare.identical.all() and new_mark.newest == WATERMARK[0], (
     "The copy doesn't match. If you re-ran earlier cells after the restore, run Module 7 (clean up) and start over.")
-print("✅ New production is an exact copy of old production, in every database.")
+print("✅ New production matches old production: the same app schema and the same rows in every app table, "
+      "in every database.")
 
 # COMMAND ----------
 
@@ -1205,23 +1299,7 @@ elif NEW_SYNC:
     sync_started = time.time()
     w.postgres.delete_synced_table(name=f"synced_tables/{SYNCED_TABLE}").wait()
     print("Removed the old project's sync")
-    for attempt in range(10):
-        try:
-            client(NEW_ID).postgres.create_synced_table(
-                synced_table=SyncedTable(spec=SyncedTableSyncedTableSpec(
-                    source_table_full_name=SOURCE_TABLE,
-                    branch=branch_path(NEW_ID, "production"),
-                    postgres_database=DB,
-                    primary_key_columns=["product_id"],
-                    scheduling_policy=SyncedTableSyncedTableSpecSyncedTableSchedulingPolicy.SNAPSHOT,
-                    create_database_objects_if_missing=True)),
-                synced_table_id=SYNCED_TABLE).wait()
-            break
-        except Exception as e:
-            if attempt == 9:
-                raise
-            print("  name still being released, retrying:", str(e)[:120])
-            time.sleep(20)
+    create_synced_table(NEW_ID, attempts=10)
     state, rows, secs = wait_for_sync(NEW_ID, SYNCED_TABLE, f"{UC_SCHEMA}.product_catalog_synced", 50)
     SYNC_SECS = round(time.time() - sync_started)
     synced_version = client(NEW_ID).postgres.get_synced_table(
@@ -1292,7 +1370,8 @@ with connect(NEW_ID, "production") as conn:
         smoke_ok = conn.execute("SELECT count(*) FROM app.orders WHERE order_id = -1").fetchone()[0] == 1
 
 checks = {
-    "Every database identical (rows and checksums)": bool(compare.identical.all()),
+    "App schema and every app table identical, in every database": bool(all(schemas_match.values())
+                                                                        and compare.identical.all()),
     "Watermark matches": int(new_mark.newest) == int(WATERMARK[0]),
     "Sequences carried over": sequences_match,
     "Migration history carried over": query(NEW_ID, "production", "SELECT max(version) AS v FROM app.schema_migrations")["v"][0] == 3,
@@ -1311,7 +1390,7 @@ print("All checks passed. Safe to switch.")
 # MAGIC
 # MAGIC For a real app, switching means changing its connection settings. The **host** changes, and for an app that signs in with OAuth, so do the workspace and the endpoint it gets tokens from. Then writes resume on the new side.
 # MAGIC
-# MAGIC Watch the order IDs: they pick up right after the watermark, because the dump carried the sequence values. The cell also tells you how long writes were paused.
+# MAGIC Watch the order IDs: they pick up right after the watermark, because the dump carried the sequence values. The cell also tells you how long writes were paused, for this tiny database; a real one takes as long as its dump and restore.
 
 # COMMAND ----------
 
@@ -1334,7 +1413,8 @@ print(f"\nWrites were paused for {paused} s, from the watermark to the first new
       "(if you stopped to read along, that's in there too).")
 if DO_SYNCED_TABLES and "SYNC_SECS" in globals():
     print(f"Swapping the synced table took {SYNC_SECS} s of it. With separate metastores, "
-          "you'd create the new sync before the pause.")
+          "you could create the new sync before the pause.")
+print("That's for this tiny lab database. Yours depends on your data, so time a practice dump and restore first.")
 
 # COMMAND ----------
 
@@ -1528,7 +1608,7 @@ except Exception as e:
 # MAGIC
 # MAGIC * **Promoted** a change with a migration, and no data crossed over.
 # MAGIC * **Built** the new home with `databricks bundle deploy`, and saw why a branch can't just move.
-# MAGIC * **Moved** production with one `pg_dump` and one filtered `pg_restore` per database, and proved every copy exact with checksums.
+# MAGIC * **Moved** production with one `pg_dump` and one filtered `pg_restore` per database, and proved the app schema and every app table match, with checksums.
 # MAGIC * **Recreated** the synced table on the new side instead of copying it.
 # MAGIC * **Rebuilt** access: roles once per branch, ownership and grants in each database.
 # MAGIC * **Passed** the verification gate, switched the app, and resumed writes.
@@ -1556,9 +1636,9 @@ except Exception as e:
 # MAGIC
 # MAGIC **On the day**
 # MAGIC
-# MAGIC 1. **Stop every writer:** the app, jobs, scripts, and any app on a child branch. Make sure nothing is mid-transaction, then take a watermark.
+# MAGIC 1. **Stop every writer, and keep them stopped:** the app, jobs, scripts, and any app on a child branch (for example, take write access away from the app's role). Check that no session is running a statement or holding a transaction open, then take a watermark.
 # MAGIC 2. **Dump and restore each database:** filter out Lakebase's platform entries, and restore with `--no-owner --no-acl --single-transaction --exit-on-error`.
-# MAGIC 3. **Check it:** row counts and checksums, the watermark, sequences, and migration history.
+# MAGIC 3. **Check it:** the schema, row counts and checksums, the watermark, sequences, and migration history.
 # MAGIC 4. **Recreate synced tables** and let them fill.
 # MAGIC 5. **Rebuild access:** roles, ownership, grants, and default privileges.
 # MAGIC 6. **Run the gate, switch the app, and resume writes.** Before the first new write, going back is just pointing the app back, after recreating any old sync you removed during the pause. After it, going back is a reverse move.
@@ -1579,6 +1659,8 @@ except Exception as e:
 # MAGIC ## Module 7: Clean up
 # MAGIC
 # MAGIC Lakebase bills for compute (close to zero when idle) and for storage, so let's delete what the lab created. The new home came from a bundle, so we tear it down the bundle way, and that gives us one last lesson.
+# MAGIC
+# MAGIC > **This is also the way out of a run that stopped partway.** Run these two cells: they delete whatever the lab made, and skip anything that isn't there. They only delete projects that carry the lab's name tag ("Lakebase move lab: ..."), so nothing else with a similar name gets touched. If the notebook has restarted or detached since the run, first run the cells from the top through Module 0.
 # MAGIC
 # MAGIC ### Step 1: Try to destroy the new home
 # MAGIC
@@ -1625,8 +1707,12 @@ else:
         for args in (["bundle", "deploy"], ["bundle", "destroy", "--auto-approve"]):
             rc, out = cli(*args)
             print(f"\n$ databricks {' '.join(args)}   (exit code {rc})\n{out}")
-    for pid in (NEW_ID, OLD_ID):  # the old home was never in the bundle
+    for pid, label in ((NEW_ID, NEW_LABEL), (OLD_ID, OLD_LABEL)):  # the old home was never in the bundle
         if project_exists(pid):
+            found = client(pid).postgres.get_project(name=project_path(pid)).status.display_name
+            if found != label:
+                print(f"\nLeft {pid} alone: this lab didn't make it (it's called {found!r}).")
+                continue
             client(pid).postgres.delete_project(name=project_path(pid), purge=True).wait()
             print("\nDeleted project", pid)
     try:

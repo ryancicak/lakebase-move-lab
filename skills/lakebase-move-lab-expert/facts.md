@@ -1,5 +1,7 @@
 # Facts, numbers, and where they come from
 
+This is the canonical list. When another reference file disagrees with it on a fact or a number, this file wins. To change a fact, change it here first, then the files that repeat it: `SKILL.md`, `lab-walkthrough.md`, `playbook.md`, and `troubleshooting.md`. Times and counts here come from small synthetic databases in a few specific setups, not estimates for a real move.
+
 Tags: **[lab]** tested in the lab (October 1 and 2, 2026); **[runs]** tested in the runs behind the lab, five moves from an AWS workspace to an Azure workspace (September 28 to 30, 2026, PostgreSQL 17.11, Databricks CLI 1.17.0); **[docs]** from the Databricks docs, not tested; **[not tested]**.
 
 ## Branches, projects, and limits
@@ -62,18 +64,24 @@ Tags: **[lab]** tested in the lab (October 1 and 2, 2026); **[runs]** tested in 
 - Two runs moved a live app (an order every second) with password logins, group roles, a synced catalog, a second database, unreleased work on child branches, and CI. [runs]
 - Both passed all 27 independent checks against the source, with zero lost orders: 53,299 orders in the first and 57,411 in the second. [runs]
 - Write pause: 25 min 49 s in the first (7 min 50 s of work, then 17 min 59 s waiting on a sign-off with the app ready on the new side), 5 min 48 s in the second (only production's steps while paused). [runs]
-- In the lab, writes were paused about 60 to 70 seconds, about 40 to 45 of them for the synced-table swap. [lab]
+- In the lab, writes were paused about 60 to 70 seconds, about 40 to 45 of them for the synced-table swap. The lab's pause is simulated (its pretend app just stops), and its database is tiny. [lab]
 
 ## The lab itself
 
 - Runs on serverless environment version 5 (pinned), and passed on versions 1 through 4: Python 3.10 to 3.12, x86 and ARM, Ubuntu 22.04 and 24.04. A full run takes about 4 to 5 minutes. [lab]
 - Passed as a service principal in jobs and as a workspace user in an interactive Run all. [lab]
 - Expected data: 1,000 customers, 5,000 orders plus 25 before the pause (watermark 5025), 3 migrations on production, 200 rows in `reporting`, 50 synced rows; new orders 5026 to 5030 after the switch. [lab]
+- Names: projects `lb-move-old-<slug>-<user id>` and `lb-move-new-<slug>-<user id>`, schema `<catalog>.lb_move_<slug>_<user id>`, secret scope `lb-move-lab-<slug>-<user id>`. The user id keeps two learners whose user names start alike from sharing a schema or scope. [lab]
+- The lab tags its projects with display names, `Lakebase move lab: old home` and `Lakebase move lab: new home` (the bundle sets `display_name`; CLI 1.17.0's `bundle validate` warns on unknown fields and didn't on this one). A project's display name comes back in `status.display_name`. [lab]
+- The lab only reuses a project it made in the same session. A same-named project with the lab's tag stops it as a leftover from an earlier run; one without the tag stops it as someone else's. Cleanup deletes only tagged projects. [lab]
+- The copy check compares each database's app schema definitions (a schema-only `pg_dump` of `app`, without owners, grants, and the dump's own header lines) and every app table's row count and checksum, plus the watermark and migration history. It doesn't cover access, which is rebuilt later, or anything outside the `app` schema. [lab]
+- Module 7 cleaned up a run stopped on purpose right after Module 3's deploy: both projects, the synced table, the schema, and the bundle folder. It worked in the same session, and after re-running the cells from the top through Module 0 (which restarts Python), when it deleted the new home directly because the session had no bundle. [lab]
+- The project's creator was a member of `pg_read_all_stats`, so `pg_stat_activity` showed every session's state, including another session `idle in transaction`. Lakebase's own `cloud_admin` sessions sat idle in the `postgres` database. The lab's pause check counts other client sessions in the app databases that are `active` or `idle in transaction`. [lab]
 
 ## Two workspaces (the lab's optional mode)
 
-- From an AWS workspace (us-west-2) to an Azure workspace (eastus2), as a serverless job on environment version 5, October 2, 2026: all 79 cells passed. The restores exited 0 in about 5 seconds across clouds, every database matched exactly, the gate passed 7 of 7, writes were paused 46 seconds (no synced-table swap), and the teardown cleaned up both workspaces. [lab]
-- On serverless, every Lakebase hostname resolved to the same private Databricks proxy address, for this workspace's computes and the other workspace's. The proxy refused the other workspace's compute: `FATAL: External authorization failed`. Connecting to that compute's public IP from public DNS (libpq `hostaddr`) worked. [lab] The live-app runs never hit this, because they ran `pg_dump` and `pg_restore` outside Databricks. [runs] Same-cloud and same-region pairs of workspaces weren't tested. [not tested]
+- From an AWS workspace (us-west-2) to an Azure workspace (eastus2), as serverless jobs and interactively on environment version 5, October 2, 2026: every cell passed. The restores exited 0 in about 5 seconds across clouds, every app table matched, the gate passed 7 of 7, writes were paused 44 to 57 seconds (no synced-table swap, tiny data; 57 once the copy check also compared schemas, which took about 18 seconds across clouds), and the teardown cleaned up both workspaces. [lab]
+- In that setup, from serverless in the AWS workspace, Lakebase hostnames resolved to one private Databricks proxy address, for that workspace's computes and the Azure workspace's. The proxy refused the Azure compute: `FATAL: External authorization failed`. Connecting to that compute's public IP from public DNS (libpq `hostaddr`) worked. With the fallback, the lab printed that it switched, and the preflight's connect check reported the public address. [lab] The live-app runs never hit this, because they ran `pg_dump` and `pg_restore` outside Databricks. [runs] Other pairs, like two workspaces in the same cloud or region, weren't tested, so the lab tries the normal route first and switches a compute to its public address only on that error. [not tested]
 - Across workspaces, the cross-project branch and the cross-project snapshot were rejected with the same errors as inside one workspace. [lab]
 - The notebook's bundle deploy, redeploy, and destroy ran against the other workspace, with the CLI signed in through the secret scope's token. [lab]
 - The two workspaces had separate metastores, so the lab skipped the synced table on the new side. Moving a synced table between two workspaces that share a metastore wasn't tested. [lab] [not tested]
