@@ -39,15 +39,17 @@ The lab lives in one notebook on purpose. There are no helper modules or SQL fil
 It takes about 3 minutes and uses one throwaway project, `lb-move-pre-<you>-<id>-<timestamp>`, which it deletes. There are three ways to run it:
 
 1. **Run the notebook.** Open `lakebase_move_lab_preflight`, set the **catalog** widget to the catalog you'll use in the lab, attach serverless compute, and click Run all. The last cell prints ✅ ready, ⚠️ ready with notes, or ❌ not ready, with a fix for each problem.
-2. **Ask Genie Code.** Add the skill once (below), then open Genie Code in any notebook and ask: *"Check that this workspace is ready for the Lakebase Move Lab."* After you approve its steps, Genie Code runs the preflight as a one-time serverless job, then explains the results and the fixes.
+2. **Ask Genie Code.** Add the skill once (below), then open Genie Code in any notebook and ask: *"Check that this workspace is ready for the Lakebase Move Lab."* Genie Code adds one cell that runs the preflight as a one-time serverless job, then explains the results and the fixes. It asks before running code, unless you've set Genie Code to auto-approve.
 3. **Paste one cell.** The cell in [`skills/lakebase-move-lab-preflight/SKILL.md`](skills/lakebase-move-lab-preflight/SKILL.md) runs the preflight as a one-time job from any notebook and prints the results. It uses a copy of the preflight next to your notebook if there is one; otherwise it runs it straight from this repo.
 
 ### Add the Genie Code skill
 
-- **From a Git folder**, which keeps the skill current: clone this repo as a Git folder. Then, in Genie Code, open **Settings**, enter the Git folder's `skills` path in the skills row (for example, `/Users/<you>/lakebase-move-lab/skills`), and click **Add folder**.
-- **Or copy one file:** in Genie Code, open **Settings**, then **Open skills folder** (that's `/Users/<you>/.assistant/skills/`). Create a folder named `lakebase-move-lab-preflight`, and put a copy of `SKILL.md` in it.
+1. Clone this repo as a Git folder (Workspace, then Create, then Git folder).
+2. Open the Genie Code pane, then its **⋮** menu, then **Customizations**, then **Skills**.
+3. If you've never added a skill, click **Create skills folder** first.
+4. Click **Add skill**, paste the Git folder's `skills` path, for example `/Users/<you>/lakebase-move-lab/skills`, and click **Add folder**.
 
-Genie Code picks the skill up in a new chat, or you can mention it directly: `@lakebase-move-lab-preflight`. To make it available to everyone, a workspace admin can put the folder in `Workspace/.assistant/skills/` instead.
+The skill shows up as `lakebase-move-lab-preflight`, switched on. Start a new chat and Genie Code uses it when you ask about getting ready for the lab, or you can mention it directly: `@lakebase-move-lab-preflight`. You can also put a copy of the `lakebase-move-lab-preflight` folder in your own skills folder, `/Users/<you>/.assistant/skills/`, or a workspace admin can put it in `Workspace/.assistant/skills/` for everyone.
 
 ## What you'll do
 
@@ -99,7 +101,21 @@ The preflight creates the project `lb-move-pre-<you>-<id>-<timestamp>`, the sche
 
 ## Tested
 
-October 1, 2026: full runs as serverless jobs in an AWS us-west-2 workspace on serverless environment versions 1 through 5, which covers Python 3.10 to 3.12, x86 and ARM machines, and Ubuntu 22.04 and 24.04. Each took about 4 minutes. Every check passed and the teardown left nothing behind.
+October 1 and 2, 2026, in an AWS us-west-2 workspace:
+
+- **The lab:**
+  - full runs as serverless jobs on environment versions 1 through 5, which covers Python 3.10 to 3.12, x86 and ARM machines, and Ubuntu 22.04 and 24.04;
+  - a run with a catalog that doesn't exist, where the synced-table steps skip cleanly;
+  - a run with 19 cells run twice in a row, where each one takes its safe path;
+  - an interactive **Run all** by a workspace user, in a notebook freshly imported from this repo's URL.
+
+  Each run took about 4 minutes, every check passed, and the teardown left nothing behind.
+- **The preflight:**
+  - ✅ on environment versions 1 through 5;
+  - ⚠️ with a catalog that doesn't exist, and for a user without `CREATE SCHEMA` on `main`;
+  - ❌ with an earlier lab run's project left over, which `CLEAN_LEFTOVERS = True` then deleted;
+  - ✅ for two runs at once, with stale preflight leftovers planted, which they deleted.
+- **Genie Code:** a workspace user added the skill from the Git folder and asked, *"Check that this workspace is ready for the Lakebase Move Lab."* Genie Code ran the preflight and reported ⚠️ (no `CREATE SCHEMA` on `main`) with the fix. Told to use a catalog the user owns, it re-ran the check and reported ✅.
 
 ## License
 

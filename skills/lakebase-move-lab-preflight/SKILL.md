@@ -94,7 +94,7 @@ else:
 | Connect with a login token | No Postgres access | A timeout points at the serverless network policy; anything else goes to the lab's owner |
 | Create a second database, Roles, ownership, and grants, pg_dump and a filtered pg_restore, Child branch and its compute, Point-in-time branch | That step of the lab fails | Send the error to the lab's owner |
 | Snapshots (warning) | The lab skips its snapshot demo | Nothing to do |
-| Schema and Delta table in the catalog (warning) | The lab skips its synced-table steps | Use a catalog where the user can create schemas, or ask for `CREATE SCHEMA` on it |
+| Schema and Delta table in the catalog (warning) | The lab skips its synced-table steps | Pick a catalog where the user can create schemas and set `CATALOG` in the lab's Module 0 helpers cell to it (it's a setting in the code, not a widget), or ask for `CREATE SCHEMA` on the catalog |
 | Synced table into Lakebase (warning) | The lab skips its synced-table steps | Read the error in the detail |
 | prevent_destroy guards the bundle, Cleanup | The lab's cleanup may not work | Delete what the detail lists, and send it to the lab's owner |
 

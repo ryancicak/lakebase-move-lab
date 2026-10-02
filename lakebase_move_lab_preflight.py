@@ -649,8 +649,9 @@ if SDK_OK:
 
 
 @check(SCHEMA_CHECK,
-       f"Only a warning: without it the lab skips its synced-table steps. To include them, use a catalog where you can "
-       f"create schemas (set it in the lab's CATALOG and this check's catalog widget), or ask for CREATE SCHEMA on {CATALOG}.",
+       f"Only a warning: without it the lab skips its synced-table steps. To include them, pick a catalog where you can "
+       f"create schemas: set CATALOG in the lab's Module 0 helpers cell to it (and this check's catalog widget, to check "
+       f"it first). Or ask for CREATE SCHEMA on {CATALOG}.",
        needs=(SDK_CHECK,))
 def _():
     try:
