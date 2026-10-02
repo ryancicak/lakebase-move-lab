@@ -13,12 +13,41 @@ One Databricks notebook that walks through promoting and moving a Lakebase envir
 
 ```
 lakebase-move-lab/
-├── lakebase_move_lab.py   # the whole lab: one Databricks notebook (Modules 0 to 7)
-├── LICENSE                # Apache License 2.0
+├── lakebase_move_lab.py             # the whole lab: one Databricks notebook (Modules 0 to 7)
+├── lakebase_move_lab_preflight.py   # the pre-lab check: run it first, about 3 minutes
+├── skills/
+│   └── lakebase-move-lab-preflight/
+│       └── SKILL.md                 # a Genie Code skill that runs the pre-lab check and explains the results
+├── LICENSE                          # Apache License 2.0
 └── README.md
 ```
 
-Everything lives in the one notebook on purpose. There are no helper modules or SQL files to keep next to it, so you can import the single file and run it.
+The lab lives in one notebook on purpose. There are no helper modules or SQL files to keep next to it, so you can import the single file and run it. The preflight is a separate, optional notebook because it runs before the lab.
+
+## Before the lab: run the preflight
+
+`lakebase_move_lab_preflight` tries everything the lab needs, the same way the lab does it, and says what to fix before anyone starts:
+
+- downloads from PyPI, apt.postgresql.org, and GitHub;
+- sign-in for both the SDK and the CLI;
+- a bundle deploy and a Postgres connection;
+- a second database, roles and grants, and `pg_dump` with a filtered `pg_restore`;
+- point-in-time branches, snapshots, and a synced table;
+- `prevent_destroy` and cleanup;
+- leftovers from an earlier run.
+
+It takes about 3 minutes and uses one throwaway project, `lb-move-pre-<you>-<id>`, which it deletes. There are three ways to run it:
+
+1. **Run the notebook.** Open `lakebase_move_lab_preflight`, set the **catalog** widget to the catalog you'll use in the lab, attach serverless compute, and click Run all. The last cell prints ✅ ready, ⚠️ ready with notes, or ❌ not ready, with a fix for each problem.
+2. **Ask Genie Code.** Add the skill once (below), then open Genie Code in any notebook and ask: *"Check that this workspace is ready for the Lakebase Move Lab."* After you approve its steps, Genie Code runs the preflight as a one-time serverless job, then explains the results and the fixes.
+3. **Paste one cell.** The cell in [`skills/lakebase-move-lab-preflight/SKILL.md`](skills/lakebase-move-lab-preflight/SKILL.md) runs the preflight as a one-time job from any notebook and prints the results. It uses a copy of the preflight next to your notebook if there is one; otherwise it runs it straight from this repo.
+
+### Add the Genie Code skill
+
+- **From a Git folder**, which keeps the skill current: clone this repo as a Git folder. Then, in Genie Code, open **Settings**, enter the Git folder's `skills` path in the skills row (for example, `/Users/<you>/lakebase-move-lab/skills`), and click **Add folder**.
+- **Or copy one file:** in Genie Code, open **Settings**, then **Open skills folder** (that's `/Users/<you>/.assistant/skills/`). Create a folder named `lakebase-move-lab-preflight`, and put a copy of `SKILL.md` in it.
+
+Genie Code picks the skill up in a new chat, or you can mention it directly: `@lakebase-move-lab-preflight`. To make it available to everyone, a workspace admin can put the folder in `Workspace/.assistant/skills/` instead.
 
 ## What you'll do
 
@@ -54,6 +83,8 @@ Two projects in one workspace stand in for two workspaces. A branch can't leave 
 - Dump files and the downloaded tools, in temporary folders on the compute.
 
 Module 7 deletes all of it. The bundle sets `purge_on_delete`, and the old project is deleted with `purge=True`, so the project names are free right away.
+
+The preflight creates the project `lb-move-pre-<you>-<id>`, the schema `<catalog>.lb_move_pre_<you>`, and the bundle folder `~/.bundle/lb-move-lab-preflight`, and deletes them before it finishes. If an earlier lab run left its projects, schema, or bundle folder behind, the preflight says so; set `CLEAN_LEFTOVERS = True` in its settings cell to delete them.
 
 ## Key Lakebase facts the lab shows
 

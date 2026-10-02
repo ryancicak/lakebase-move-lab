@@ -638,22 +638,27 @@ def wait_for_sync(pid, synced_name, pg_table, expected_rows, timeout=900):
 if DO_SYNCED_TABLES:
     try:
         spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{UC_SCHEMA}")
-        spark.sql(f"""CREATE OR REPLACE TABLE {SOURCE_TABLE} (
+        spark.sql(f"""CREATE TABLE IF NOT EXISTS {SOURCE_TABLE} (
                         product_id BIGINT NOT NULL, name STRING NOT NULL, price_cents INT NOT NULL,
                         CONSTRAINT product_catalog_pk PRIMARY KEY (product_id))
                       TBLPROPERTIES (delta.enableChangeDataFeed = true)""")
-        spark.sql(f"INSERT INTO {SOURCE_TABLE} SELECT id, concat('Product ', id), CAST(100 + id * 25 AS INT) "
-                  f"FROM range(1, 51)")
-        w.postgres.create_synced_table(
-            synced_table=SyncedTable(spec=SyncedTableSyncedTableSpec(
-                source_table_full_name=SOURCE_TABLE,
-                branch=branch_path(OLD_ID, "production"),
-                postgres_database=DB,
-                primary_key_columns=["product_id"],
-                scheduling_policy=SyncedTableSyncedTableSpecSyncedTableSchedulingPolicy.SNAPSHOT,
-                create_database_objects_if_missing=True)),
-            synced_table_id=SYNCED_TABLE).wait()
-        print("Create call returned. Waiting for the rows to land...")
+        if spark.table(SOURCE_TABLE).count() == 0:
+            spark.sql(f"INSERT INTO {SOURCE_TABLE} SELECT id, concat('Product ', id), CAST(100 + id * 25 AS INT) "
+                      f"FROM range(1, 51)")
+        try:
+            w.postgres.get_synced_table(name=f"synced_tables/{SYNCED_TABLE}")
+            print("The synced table already exists, so we reuse it.")
+        except Exception:
+            w.postgres.create_synced_table(
+                synced_table=SyncedTable(spec=SyncedTableSyncedTableSpec(
+                    source_table_full_name=SOURCE_TABLE,
+                    branch=branch_path(OLD_ID, "production"),
+                    postgres_database=DB,
+                    primary_key_columns=["product_id"],
+                    scheduling_policy=SyncedTableSyncedTableSpecSyncedTableSchedulingPolicy.SNAPSHOT,
+                    create_database_objects_if_missing=True)),
+                synced_table_id=SYNCED_TABLE).wait()
+            print("Create call returned. Waiting for the rows to land...")
         state, rows, secs = wait_for_sync(OLD_ID, SYNCED_TABLE, f"{UC_SCHEMA}.product_catalog_synced", 50)
         print(f"Synced: {rows} rows in Postgres, state {state}, after {secs} s")
     except Exception as e:
@@ -1196,12 +1201,16 @@ show(query(NEW_ID, "development", "SELECT count(*) AS stock_rows FROM app.stock"
 print("Migrations on new development:", migrate(NEW_ID, "development", up_to=4))
 
 # Dev-only table: a data-only dump of just that table, restored after the migration created it.
-FLAGS = WORK_DIR / "dev_flags.dump"
-rc, secs, err = run_pg("pg_dump", OLD_ID, "development", ["-Fc", "--data-only", "-t", "app.feature_flags", "-f", str(FLAGS)])
-print(f"Dumped dev's feature flags: exit {rc}")
-rc, secs, err = run_pg("pg_restore", NEW_ID, "development",
-                       ["--data-only", "--no-owner", "--no-acl", "--single-transaction", "--exit-on-error", "-d", DB, str(FLAGS)])
-print(f"Restored them into new development: exit {rc}" + ("" if rc == 0 else f" ({err})"))
+flags_there = query(NEW_ID, "development", "SELECT count(*) AS n FROM app.feature_flags")["n"][0]
+if flags_there:
+    print(f"New development already has {flags_there} feature flags, so we skip the copy.")
+else:
+    FLAGS = WORK_DIR / "dev_flags.dump"
+    rc, secs, err = run_pg("pg_dump", OLD_ID, "development", ["-Fc", "--data-only", "-t", "app.feature_flags", "-f", str(FLAGS)])
+    print(f"Dumped dev's feature flags: exit {rc}")
+    rc, secs, err = run_pg("pg_restore", NEW_ID, "development",
+                           ["--data-only", "--no-owner", "--no-acl", "--single-transaction", "--exit-on-error", "-d", DB, str(FLAGS)])
+    print(f"Restored them into new development: exit {rc}" + ("" if rc == 0 else f" ({err})"))
 
 # Shared tables: find what dev changed relative to production, and apply exactly that.
 dev_coupons = query(OLD_ID, "development", "SELECT code, percent_off FROM app.coupons")
@@ -1291,11 +1300,18 @@ print("(Deleted the before-the-move branch again.)")
 # DBTITLE 1,Snapshot old production, then try to restore it in the new home
 """Snapshot old production, then ask the new project for a branch from that snapshot. It's expected to fail."""
 try:
-    w.postgres.create_snapshot(
-        parent=project_path(OLD_ID),
-        snapshot=Snapshot(spec=SnapshotSpec(source_branch=branch_path(OLD_ID, "production"), ttl=Duration(seconds=86400))),
-        snapshot_id="before-the-move",
-    ).wait()
+    for attempt in range(3):  # snapshot creation can fail once in a while; try again before giving up
+        try:
+            w.postgres.create_snapshot(
+                parent=project_path(OLD_ID),
+                snapshot=Snapshot(spec=SnapshotSpec(source_branch=branch_path(OLD_ID, "production"), ttl=Duration(seconds=86400))),
+                snapshot_id="before-the-move",
+            ).wait()
+            break
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(15)
     snapshot = f"{project_path(OLD_ID)}/snapshots/before-the-move"
     print("Created snapshot:", snapshot)
     try:
@@ -1310,7 +1326,7 @@ try:
         print("  ", str(e)[:300])
     w.postgres.delete_snapshot(name=snapshot).wait()
 except Exception as e:
-    print("Snapshots aren't available in this workspace, so skipping this demo:", str(e)[:200])
+    print("Couldn't create a snapshot here, so skipping this demo:", str(e)[:200])
 
 # COMMAND ----------
 
@@ -1424,7 +1440,10 @@ else:
         spark.sql(f"DROP SCHEMA IF EXISTS {CATALOG}.{UC_SCHEMA} CASCADE")  # only this lab's own schema
         print("Dropped schema", f"{CATALOG}.{UC_SCHEMA} (if it existed)")
     except Exception as e:
-        print("Couldn't drop the lab schema:", str(e)[:120])
+        if "NOT_FOUND" in str(e) or "NO_SUCH" in str(e):
+            print("No lab schema to drop")
+        else:
+            print("Couldn't drop the lab schema:", str(e)[:120])
     try:
         w.workspace.delete(BUNDLE_ROOT, recursive=True)  # only this lab's bundle folder
     except Exception:
