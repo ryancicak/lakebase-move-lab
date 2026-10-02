@@ -1,6 +1,6 @@
 ---
 name: lakebase-move-lab-preflight
-description: Checks that this Databricks workspace is ready for the Lakebase Move Lab before anyone runs it, and says what to fix. Use when the user asks to validate, preflight, or readiness-check the Lakebase Move Lab, to make sure the lab will work here, or why the lab's setup cells fail. Do not use to run the lab itself or for general Lakebase questions.
+description: Checks that this Databricks workspace is ready for the Lakebase Move Lab before anyone runs it, and says what to fix. Use when the user asks to validate, preflight, or readiness-check the Lakebase Move Lab, or to make sure the lab will work in this workspace. Do not use to run the lab itself, to explain how the lab works or why a lab step failed (use lakebase-move-lab-expert), or for general Lakebase questions.
 ---
 
 <!--
