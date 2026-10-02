@@ -57,7 +57,7 @@ pg_restore --no-owner --no-acl --single-transaction --exit-on-error -L prod.toc 
 
 **4. Recreate the synced tables on the new production, and let them fill,** before the child branches.
 
-- Synced tables can't travel through `pg_dump` (tested). Exclude each with `--exclude-table` (once per table), or `--exclude-schema` if they have a schema to themselves. A typo matches nothing and isn't an error, so confirm with `pg_restore -l` that none is left. Exclude any view that reads a synced table too (`-T` matches views), and recreate it once the sync is online.
+- Synced tables can't travel through `pg_dump` (tested). Exclude each with `--exclude-table` (once per table), or `--exclude-schema` if they have a schema to themselves. A typo matches nothing and isn't an error, so confirm with `pg_restore -l` that none is left. Exclude any view that reads a synced table too (`-T` matches views), and recreate it once the sync is online. (The typo and view behaviors were checked on a local PostgreSQL 17, not in the moves.)
 - Create the sync in the UI, the API, or `databricks postgres create-synced-table <catalog.schema.table> --json @sync.json`, where `sync.json` is `{"spec": {"source_table_full_name": ..., "branch": "projects/<id>/branches/production", "primary_key_columns": [...], "scheduling_policy": "SNAPSHOT", "postgres_database": "databricks_postgres", "create_database_objects_if_missing": true}}`.
 - The create call returns before the rows land. Ours filled about 33 seconds after it reported done. Wait for the state to be online and count the rows.
 - Prove it's current: `status.last_sync.delta_table_sync_info.delta_commit_version` from `get-synced-table` should equal the newest version in `DESCRIBE HISTORY` on the source.
