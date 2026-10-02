@@ -36,6 +36,7 @@ Tags: **[lab]** tested in the lab (October 1 and 2, 2026); **[runs]** tested in 
 - The sync filled about 33 seconds after the create call reported done, for 1,000 rows in the runs and 50 rows in the lab. [runs] [lab]
 - `get-synced-table` doesn't return the sync's spec, so keep it in Git. [runs]
 - In the lab, the swap (delete the old sync, create the new one, wait for the rows) took about 40 to 45 seconds. [lab]
+- In one workspace (one metastore), a synced table's name can point at only one project: creating it on the new project had to wait until the old sync was deleted and the name was released. [lab] Creating the new sync before the pause when the metastores are separate follows from that, but wasn't tested; the two live-app runs created their syncs during the pause. [not tested]
 
 ## Bundles
 
