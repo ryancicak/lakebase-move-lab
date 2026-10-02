@@ -16,7 +16,7 @@ Everything in the reference files was tested end to end, either in the lab or in
 
 ## How to answer
 
-1. Read the reference file for the topic before you answer. Don't answer lab-specific questions from memory, and don't stretch a tip beyond the case the file gives it for.
+1. Read the reference file for the topic before you answer. Don't answer lab-specific questions from memory, don't stretch a tip beyond the case the file gives it for, and don't fill in details the files don't give.
 2. If the user is in the lab notebook, look at the cell and the output they mean, and answer from what it actually shows. Refer to cells by their titles and modules (for example, "Module 4, Step 3, the pg_restore cell").
 3. Lead with the direct answer in a sentence or two. Then the why, then what to do about it. Include the practical next step from the reference file even if the user didn't ask, like keeping the old project for a restore window after a move.
 4. Say where each point comes from: tested in the lab, tested in our runs, from the docs, or not tested. When an answer mixes sources, tag the points separately; don't call the whole answer tested. If the reference files don't cover something, say so plainly and point to the Databricks docs instead of guessing.
@@ -37,11 +37,12 @@ Everything in the reference files was tested end to end, either in the lab or in
 - A branch can't leave its project. Creating a branch whose parent is in another project fails with `source_branch field must point to the branch from the same Project`, even in the same workspace. Nothing in the API exports, copies, or moves a branch.
 - So promoting to another workspace means rebuilding there: a bundle for the project, branches, and computes; migrations for the schema; and `pg_dump` and `pg_restore` only when the data itself has to move.
 - Most releases are promotions: deploy the bundle, run the migrations, and no data crosses workspaces. A move happens when the environment relocates (a new workspace, cloud, or region) or needs a newer Postgres major version.
+- A move is five steps, in order: put it all in Git; deploy the bundle and leave the new production un-migrated; restore production from a full dump, one database at a time; recreate the synced tables; then rebuild the child branches and migrate them (tested). Don't run migrations on the new production before the restore: the full dump brings the schema, the data, and the migration history together, and a restore into tables that already exist fails.
 - A move copies just the data, one database at a time. Point-in-time history, snapshots, access, and synced tables don't come along (tested). Keep the old project for at least one restore window (2 to 30 days, 7 by default, per the docs), and set the window and the snapshot schedule again on the new project.
 - Children only see what their parent had when they were created, so rebuild the child branches after production is restored: delete them, youngest first, redeploy, and migrate them (tested). For a child's own data, load its branch-only tables with a data-only dump of just those tables, and script its edits to rows production also has; a data-only dump of the whole child fails on duplicate keys.
 - The documented `pg_restore` restored every row but exited 1 in our runs (18 errors across workspaces). `--no-owner --no-acl` plus a filtered list that drops Lakebase's own platform entries gave exit 0; both are required.
 - A project can have 3 root branches, but the ones beyond production come only from point-in-time or snapshot restores, so there's no empty second root to restore a dump into (docs). A dump goes into a new project's production.
-- There's no in-place major version upgrade (docs). Bumping `pg_version` on a deployed bundle plans a delete and recreate of the whole project, data included, and `prevent_destroy` blocks it (tested). Upgrade with a move.
+- There's no in-place major version upgrade (docs). Bumping `pg_version` on a deployed bundle plans a delete and recreate of the whole project, data included, and `prevent_destroy` blocks it (tested). Upgrade with a move: the five steps above, with the new project on the newer version. The `pg_dump` client must be the same as or newer than the source's Postgres version.
 
 ## What's outside this skill
 
