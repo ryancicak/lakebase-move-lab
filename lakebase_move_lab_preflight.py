@@ -11,27 +11,27 @@
 # MAGIC %md
 # MAGIC # Lakebase Move Lab: preflight check
 # MAGIC
-# MAGIC Run this **before** the lab. In about 3 minutes it tries everything the lab needs, the same way the lab does it, and tells you exactly what to fix, so nobody hits a wall halfway through.
+# MAGIC Run this **before** the lab. In about 3 minutes, it tries everything the lab needs, the same way the lab does it, and tells you exactly what to fix. That way nobody hits a wall halfway through.
 # MAGIC
 # MAGIC It checks:
 # MAGIC
 # MAGIC * **Downloads:** the Python packages from PyPI, the PostgreSQL client tools from apt.postgresql.org, and the Databricks CLI from GitHub.
 # MAGIC * **Sign-in:** the SDK and the CLI both sign in as you, with nothing to configure.
-# MAGIC * **Lakebase:** a bundle deploys a project; you can connect, create a second database, set up roles and grants, run `pg_dump` and a filtered `pg_restore`, and create point-in-time branches and snapshots.
+# MAGIC * **Lakebase:** a bundle deploys a project, and you can connect, create a second database, set up roles and grants, run `pg_dump` and a filtered `pg_restore`, and create point-in-time branches and snapshots.
 # MAGIC * **Synced tables:** you can create a schema in the lab's catalog and sync a Delta table into Lakebase.
 # MAGIC * **Cleanup:** `prevent_destroy` guards the bundle, and everything this check creates gets deleted.
 # MAGIC * **Leftovers:** nothing from an earlier lab run is still around.
 # MAGIC
-# MAGIC It creates one small throwaway project, `lb-move-pre-…`, and deletes it at the end. Run it the way you'll run the lab: on serverless, as yourself. The last cell prints the verdict: ✅ ready, ⚠️ ready with notes, or ❌ fix these first.
+# MAGIC It creates one small throwaway project, `lb-move-pre-…`, and deletes it at the end. Run it the way you'll run the lab: on serverless, as yourself. The last cell gives you the verdict: ✅ ready, ⚠️ ready with notes, or ❌ fix these first.
 # MAGIC
-# MAGIC > You can also ask **Genie Code** to run this check and explain the results. See the repo's README.
+# MAGIC > You can also ask **Genie Code** to run this check and explain the results. The repo's README shows how.
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ### Install the Python libraries
 # MAGIC
-# MAGIC The same install as the lab's first cell. If this cell fails, the lab's will too; usually that means serverless can't reach PyPI. Ask your workspace admin to allow PyPI, or a PyPI mirror, for serverless compute.
+# MAGIC Same install as the lab's first cell. If this fails, the lab's will too, and that usually means serverless can't reach PyPI. Ask your workspace admin to allow PyPI, or a PyPI mirror, for serverless compute.
 
 # COMMAND ----------
 
@@ -46,7 +46,12 @@ dbutils.library.restartPython()
 # MAGIC %md
 # MAGIC ### Settings and how checks are recorded
 # MAGIC
-# MAGIC Set **catalog** (the widget at the top) to the catalog you'll use for the lab's synced table; the lab's default is `main`. Each check records ✅ **pass**, ⚠️ **warning** (the lab still runs, minus a step), ❌ **fail** (fix it before the lab), or ⏭️ **skipped** (a check it depends on failed), with the fix.
+# MAGIC Set **catalog** (the widget at the top) to the catalog you'll use for the lab's synced table. The lab's default is `main`. Each check records one of four results, with a fix when it isn't a pass:
+# MAGIC
+# MAGIC * ✅ **pass**
+# MAGIC * ⚠️ **warning**: the lab still runs, minus a step
+# MAGIC * ❌ **fail**: fix it before the lab
+# MAGIC * ⏭️ **skipped**: a check it depends on failed
 
 # COMMAND ----------
 
@@ -132,7 +137,7 @@ print("Catalog for the synced-table check:", CATALOG)
 # MAGIC %md
 # MAGIC ### Compute, downloads, and sign-in
 # MAGIC
-# MAGIC The lab downloads the PostgreSQL client tools and the Databricks CLI, loads psycopg on the downloaded `libpq`, and signs in to Databricks two ways: the SDK and the CLI. This cell does all of that exactly as the lab does.
+# MAGIC The lab downloads the PostgreSQL client tools and the Databricks CLI, loads psycopg on the downloaded `libpq`, and signs in to Databricks two ways: with the SDK and with the CLI. This cell does all of that, exactly the way the lab does.
 
 # COMMAND ----------
 
@@ -268,7 +273,7 @@ def _():
 # MAGIC %md
 # MAGIC ### Leftovers from an earlier lab run
 # MAGIC
-# MAGIC The lab names its projects, schema, and bundle folder after you, and expects to start clean. If an earlier run didn't reach its cleanup module, this check finds what's left. Set `CLEAN_LEFTOVERS = True` in the settings cell and run the check again to delete them.
+# MAGIC The lab names its projects, schema, and bundle folder after you, and it expects to start clean. If an earlier run didn't make it to cleanup, this check finds what's left. To delete it, set `CLEAN_LEFTOVERS = True` in the settings cell and run the check again.
 
 # COMMAND ----------
 
@@ -333,7 +338,13 @@ def _():
 # MAGIC %md
 # MAGIC ### Lakebase: the steps the lab relies on
 # MAGIC
-# MAGIC A bundle deploys a throwaway project the way the lab builds its new home: the project, an adopted `production` branch, and a `development` branch with its own compute. Then the check connects with a login token, creates a second database, sets up roles and grants with the lab's own SQL, runs `pg_dump` and a filtered `pg_restore` into the second database, and tries a point-in-time branch and a snapshot.
+# MAGIC A bundle deploys a throwaway project the same way the lab builds its new home: the project, an adopted `production` branch, and a `development` branch with its own compute. Then the check:
+# MAGIC
+# MAGIC * connects with a login token;
+# MAGIC * creates a second database;
+# MAGIC * sets up roles and grants with the lab's own SQL;
+# MAGIC * runs `pg_dump` and a filtered `pg_restore` into the second database;
+# MAGIC * tries a point-in-time branch and a snapshot.
 
 # COMMAND ----------
 
@@ -615,7 +626,7 @@ def _():
 # MAGIC %md
 # MAGIC ### Synced tables
 # MAGIC
-# MAGIC The lab syncs a small Delta table into Lakebase. This needs a catalog where you can create a schema and a table. If you can't, the lab still runs and skips its synced-table steps, so these two checks are warnings, not failures.
+# MAGIC The lab syncs a small Delta table into Lakebase, and that needs a catalog where you can create a schema and a table. If you can't, the lab still runs and just skips its synced-table steps. That's why these two checks are warnings, not failures.
 
 # COMMAND ----------
 
@@ -703,7 +714,7 @@ def _():
 # MAGIC %md
 # MAGIC ### Cleanup
 # MAGIC
-# MAGIC First the check confirms that `prevent_destroy` refuses a `bundle destroy`, as it will in the lab's last module. Then it takes the guard out, destroys the throwaway project with the bundle, and deletes the schema and the bundle folder. This cell runs even if earlier checks failed.
+# MAGIC First, the check makes sure `prevent_destroy` refuses a `bundle destroy`, like it will in the lab's last module. Then it takes the guard out, destroys the throwaway project with the bundle, and deletes the schema and the bundle folder. This cell runs even if earlier checks failed.
 
 # COMMAND ----------
 
