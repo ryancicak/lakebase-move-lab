@@ -16,8 +16,14 @@ lakebase-move-lab/
 ├── lakebase_move_lab.py             # the whole lab: one Databricks notebook (Modules 0 to 7)
 ├── lakebase_move_lab_preflight.py   # the pre-lab check: run it first, about 3 minutes
 ├── skills/
-│   └── lakebase-move-lab-preflight/
-│       └── SKILL.md                 # a Genie Code skill that runs the pre-lab check and explains the results
+│   ├── lakebase-move-lab-preflight/
+│   │   └── SKILL.md                 # a Genie Code skill that runs the pre-lab check and explains the results
+│   └── lakebase-move-lab-expert/
+│       ├── SKILL.md                 # a Genie Code skill that answers questions about the lab and the playbook behind it
+│       ├── lab-walkthrough.md       # every module and cell, and the output to expect
+│       ├── playbook.md              # promoting and moving for real, across workspaces
+│       ├── troubleshooting.md       # errors, their causes, and fixes
+│       └── facts.md                 # limits, numbers, and test results, each with its source
 ├── LICENSE                          # Apache License 2.0
 └── README.md
 ```
@@ -39,17 +45,29 @@ The lab lives in one notebook on purpose. There are no helper modules or SQL fil
 It takes about 3 minutes and uses one throwaway project, `lb-move-pre-<you>-<id>-<timestamp>`, which it deletes. There are three ways to run it:
 
 1. **Run the notebook.** Open `lakebase_move_lab_preflight`, set the **catalog** widget to the catalog you'll use in the lab, attach serverless compute, and click Run all. The last cell prints ✅ ready, ⚠️ ready with notes, or ❌ not ready, with a fix for each problem.
-2. **Ask Genie Code.** Add the skill once (below), then open Genie Code in any notebook and ask: *"Check that this workspace is ready for the Lakebase Move Lab."* Genie Code adds one cell that runs the preflight as a one-time serverless job, then explains the results and the fixes. It asks before running code, unless you've set Genie Code to auto-approve.
+2. **Ask Genie Code.** Add the skills once (below), then open Genie Code in any notebook and ask: *"Check that this workspace is ready for the Lakebase Move Lab."* Genie Code adds one cell that runs the preflight as a one-time serverless job, then explains the results and the fixes. It asks before running code, unless you've set Genie Code to auto-approve.
 3. **Paste one cell.** The cell in [`skills/lakebase-move-lab-preflight/SKILL.md`](skills/lakebase-move-lab-preflight/SKILL.md) runs the preflight as a one-time job from any notebook and prints the results. It uses a copy of the preflight next to your notebook if there is one; otherwise it runs it straight from this repo.
 
-### Add the Genie Code skill
+### Add the Genie Code skills
 
 1. Clone this repo as a Git folder (Workspace, then Create, then Git folder).
 2. Open the Genie Code pane, then its **⋮** menu, then **Customizations**, then **Skills**.
 3. If you've never added a skill, click **Create skills folder** first.
 4. Click **Add skill**, paste the Git folder's `skills` path, for example `/Users/<you>/lakebase-move-lab/skills`, and click **Add folder**.
 
-The skill shows up as `lakebase-move-lab-preflight`, switched on. Start a new chat and Genie Code uses it when you ask about getting ready for the lab, or you can mention it directly: `@lakebase-move-lab-preflight`. You can also put a copy of the `lakebase-move-lab-preflight` folder in your own skills folder, `/Users/<you>/.assistant/skills/`, or a workspace admin can put it in `Workspace/.assistant/skills/` for everyone.
+Two skills show up, switched on: `lakebase-move-lab-preflight` and `lakebase-move-lab-expert`. Start a new chat after adding or changing skills. Genie Code picks the right one from your question, or you can mention one directly, like `@lakebase-move-lab-expert`. You can also put copies of the skill folders in your own skills folder, `/Users/<you>/.assistant/skills/`, or a workspace admin can put them in `Workspace/.assistant/skills/` for everyone.
+
+## Ask the lab expert
+
+`lakebase-move-lab-expert` is a Genie Code skill that knows the lab and the playbook behind it: what every cell does and the output to expect, why the lab does each step its way, what an error means and how to fix it, and how to promote or move a Lakebase environment for real, across workspaces. Each point in an answer says where it comes from: tested in the lab, tested in the runs behind it, the Databricks docs, or not tested. Add it with the preflight skill (above), start a new chat, and ask. For example:
+
+- *Why does the lab restore with `--no-owner --no-acl` and a filtered list instead of the documented `pg_restore` command?*
+- *Won't `pg_restore` rebuild the child branches for me?*
+- *How long will writes be paused when we move production, and how do we keep that short?*
+- *Our app signs in with OAuth instead of a password. What changes when we move it?*
+- In the lab notebook, after a run: *How long were writes paused in this run, and why?*
+
+It answers questions and doesn't create or change anything unless you ask. Questions about whether a workspace is ready go to the preflight skill. It doesn't cover disaster recovery, a standby in another region for failover, which is a different job.
 
 ## What you'll do
 
@@ -115,7 +133,12 @@ October 1 and 2, 2026, in an AWS us-west-2 workspace:
   - ⚠️ with a catalog that doesn't exist, and for a user without `CREATE SCHEMA` on `main`;
   - ❌ with an earlier lab run's project left over, which `CLEAN_LEFTOVERS = True` then deleted;
   - ✅ for two runs at once, with stale preflight leftovers planted, which they deleted.
-- **Genie Code:** a workspace user added the skill from the Git folder and asked, *"Check that this workspace is ready for the Lakebase Move Lab."* Genie Code ran the preflight and reported ⚠️ (no `CREATE SCHEMA` on `main`) with the fix. Told to use a catalog the user owns, it re-ran the check and reported ✅.
+- **Genie Code, the preflight skill:** a workspace user added the skill from the Git folder and asked, *"Check that this workspace is ready for the Lakebase Move Lab."* Genie Code ran the preflight and reported ⚠️ (no `CREATE SCHEMA` on `main`) with the fix. Told to use a catalog the user owns, it re-ran the check and reported ✅.
+- **Genie Code, the expert skill:** ten questions about the lab and real moves, each in a new chat, asked with the skill switched off and then on.
+  - Off, Genie Code answered from general Lakebase guidance. Five of the ten answers included something wrong or misleading, like a project having only one root branch, roles coming along in a dump, or a dump dropping when its login token expires, and most missed the tested specifics.
+  - On, after tuning the skill's description so questions that don't mention the lab still reach it, every answer covered the tested key points, with a source for each point.
+  - In a lab notebook after a run, it answered from the notebook's real outputs: writes paused for 66 seconds, 44 of them for the synced-table swap.
+  - Readiness questions still went to the preflight skill, and an unrelated Lakebase question went to Genie Code's general guidance.
 
 ## License
 
