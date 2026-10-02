@@ -1368,7 +1368,7 @@ except Exception as e:
 # MAGIC 3. **Verify:** row counts and checksums, the watermark, sequences, and migration history.
 # MAGIC 4. **Recreate synced tables** and let them fill.
 # MAGIC 5. **Rebuild access:** roles, ownership, grants, and default privileges.
-# MAGIC 6. **Run the gate, switch the app, and resume writes.** Before the first new write, going back is just pointing the app back. After it, going back is a reverse move.
+# MAGIC 6. **Run the gate, switch the app, and resume writes.** Before the first new write, going back is just pointing the app back, after recreating any old sync you removed during the pause. After it, going back is a reverse move.
 # MAGIC 7. **Rebuild the child branches** from the new production (delete, redeploy), then carry each one's own work.
 # MAGIC
 # MAGIC **After**
