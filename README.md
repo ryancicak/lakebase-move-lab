@@ -5,28 +5,41 @@ SPDX-License-Identifier: Apache-2.0
 
 # Lakebase Move Lab
 
-One notebook that walks you through promoting and moving a Lakebase environment, one cell at a time, on real Lakebase projects. It's the hands-on companion to the *Promote Lakebase across workspaces* deck: the deck explains the why, and this notebook lets you actually do it. It also works on its own: each step explains what it's doing and why.
+Lakebase is managed Postgres in Databricks. This hands-on notebook creates two small Lakebase projects in **one workspace**, shows why a branch can't move from one project to another, and rebuilds the environment the way a real move does.
 
-**The short version:** you can't move a Lakebase branch. So you rebuild the environment in the new place: a bundle creates the project and branches, `pg_dump` and `pg_restore` copy the data when it has to come along, and migrations carry schema changes, as in any release. This lab takes you through all of it, start to finish.
+You don't need a second workspace or any Lakebase experience. A full **Run all** takes about 4 minutes and deletes everything it creates at the end. It's the hands-on companion to the *Promote Lakebase across workspaces* deck.
 
-## Quick start
+## Start here
 
-1. **Get the notebook** into your workspace. Clone this repo as a Git folder, or download `lakebase_move_lab.py` and import it (Workspace, then Import). Attach serverless compute.
-2. **Run Choose your setup.** Leave the boxes at the defaults so both homes stay in this workspace. Change the catalog only if you need a different one for the synced-table steps.
-3. **Go through it.** Cell by cell with Shift+Enter is best for learning; **Run all** works as a demo. A full run is about 4 minutes, and the last module deletes everything it made.
+You need:
 
-Running it with a group? The [preflight](#before-the-lab-run-the-preflight) checks the workspace first, in about 3 minutes, and tells you what to fix.
+- **Serverless compute with internet access**
+- **Permission to create Lakebase projects**
 
-If a run stops partway, scroll to **Module 7** and run its two cells: they clean up whatever the lab made. (If the notebook has restarted or detached since, first run the cells from the top through **Module 0**.)
+Then:
 
-Stuck, or curious why something works the way it does? Ask the [lab expert](#ask-the-lab-expert) in Genie Code.
+1. **Get the notebook.** In your Databricks workspace, choose **Workspace → Create → Git folder** and clone `https://github.com/ryancicak/lakebase-move-lab`, or download `lakebase_move_lab.py` and import it (in **Workspace**, open the **⋮** menu, then **Import**).
+2. **Open `lakebase_move_lab` and attach serverless compute.** Its first code cell adds a few setup boxes at the top, already set to **This workspace** and catalog `main`. Leave them as they are for your first run.
+3. **Run it.** Use Shift+Enter and read each short explanation to learn, or click **Run all** for the four-minute demo.
+
+Your first checkpoint is a real Lakebase project, its `production` branch, and the compute host an app connects to, with a link to see it in Lakebase Postgres. A later cell tries the tempting shortcut, branching the new project from the old one, and shows the expected rejection.
+
+The synced-table exercise is optional. If you can't create a schema in `main`, the notebook skips it with a note and completes the rest of the lab.
+
+If a run stops partway, run the two cells in **Module 7: Clean up**. If the notebook restarted or detached, first run from the top through **Module 0**, then run Module 7.
+
+Running it for a group? Run the [preflight](#optional-check-a-workspace-before-a-workshop) first. In about 3 minutes, it checks that the workspace can do everything the lab needs.
+
+## Reference and advanced paths
+
+Everything below is optional for a first run. It covers the repository contents, the full module map, workshop preflight, Genie Code help, and a real second-workspace setup.
 
 ## What's in here
 
 ```
 lakebase-move-lab/
 ├── lakebase_move_lab.py             # the whole lab: one Databricks notebook (Modules 0 to 7)
-├── lakebase_move_lab_preflight.py   # the pre-lab check: run it first, about 3 minutes
+├── lakebase_move_lab_preflight.py   # an optional check before a workshop, about 3 minutes
 ├── skills/
 │   ├── lakebase-move-lab-preflight/
 │   │   └── SKILL.md                 # a Genie Code skill that runs the pre-lab check and explains the results
@@ -72,9 +85,9 @@ Everything else runs the same, with two differences:
 
 Databricks hides anything that matches a secret, so the other workspace's URL shows up as `[REDACTED]` in the output. To check it all first, run the preflight with the same answers.
 
-## Before the lab: run the preflight
+## Optional: check a workspace before a workshop
 
-The preflight, `lakebase_move_lab_preflight`, tries everything the lab needs, the same way the lab does it, and tells you what to fix before anyone starts. It checks:
+The preflight, `lakebase_move_lab_preflight`, is useful before a group session or in a restricted workspace. It tries everything the lab needs, the same way the lab does it, and tells you what to fix before anyone starts. A solo learner on a normal workspace can start with the notebook and use the preflight only if something is blocked. It checks:
 
 - downloads from PyPI, apt.postgresql.org, and GitHub;
 - sign-in for the SDK and the CLI;
@@ -114,7 +127,7 @@ Add it with the preflight skill (above), start a new chat, and ask away. A few t
 
 It answers questions, and it won't create or change anything unless you ask. Readiness questions go to the preflight skill. It doesn't cover disaster recovery (a standby in another region for failover), which is a different job.
 
-## Requirements
+## Detailed requirements
 
 - **Serverless compute with internet access.** The notebook downloads the PostgreSQL 17 client tools (`pg_dump`, `pg_restore`, and `libpq`, which psycopg also uses) from [apt.postgresql.org](https://apt.postgresql.org) and the Databricks CLI from [GitHub](https://github.com/databricks/cli/releases), and unpacks them locally. No admin rights needed. We haven't tested a classic cluster.
 - **Permission to create Lakebase projects.**
@@ -196,6 +209,10 @@ October 1 and 2, 2026, in an AWS us-west-2 workspace:
   - environment versions 1 through 4, with each run printing what it ran on: 1.13 (Python 3.10, Ubuntu 22.04), 2.5 (Python 3.11, Ubuntu 22.04), 3.6 and 4.10 (Python 3.12, Ubuntu 24.04), all with the pinned packages, and with the synced table on 1 and 2;
   - interactively, as a workspace user, in a fresh import: with a catalog the user owns in box 3, Run all passed all 38 code cells, with the synced table;
   - in a new session, changing a box made Databricks re-run the helpers cell before the cells above it had run, and it failed with `NameError: name 'os' is not defined`. It now stops with a note to click Run all, and Run all then passed again. Clicking Run all right after a box change can bring up Databricks' **Cancel existing executions?** dialog; **Yes** runs everything.
+- **A simpler first ten minutes, October 3:** the notebook now reaches the first project after about 530 words of reading instead of about 1,260, and the project and branch explanation comes right after the cross-project rejection. Step 1 prints a link to the project in Lakebase Postgres, because that UI lists every learner's project under the same display name. On the final notebook:
+  - cell by cell, as a workspace user in a fresh import: the boxes appeared after the first code cell, and Step 1's link opened the project's page with its `production` branch. Module 7 then cleaned up that partial run;
+  - Run all with the default answers: all 38 code cells passed, with the synced-table steps skipped for a user without `CREATE SCHEMA` on `main`;
+  - as jobs on environment version 5, in two workspaces: a service principal with the synced table and a workspace user without it. Both passed, each printed a link to its own workspace, and nothing was left behind.
 
 ## License
 

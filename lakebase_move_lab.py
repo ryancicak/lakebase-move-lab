@@ -7,50 +7,33 @@
 # MAGIC <!-- Copyright 2026 Databricks, Inc. SPDX-License-Identifier: Apache-2.0 -->
 # MAGIC # Lakebase Move Lab
 # MAGIC
-# MAGIC This notebook walks you through moving a Lakebase environment, one cell at a time, on real Lakebase projects. It's the hands-on version of the *Promote Lakebase across workspaces* deck.
+# MAGIC Lakebase is managed Postgres in Databricks. In this notebook you create two real Lakebase projects in **this workspace**, then rebuild an app from one project in the other. It's the hands-on version of the *Promote Lakebase across workspaces* deck.
 # MAGIC
-# MAGIC In short:
+# MAGIC You will:
 # MAGIC
-# MAGIC 1. You can't move a Lakebase branch. It can't leave its project.
-# MAGIC 2. So you rebuild it in the new place. A **bundle** creates the project and branches, `pg_dump` and `pg_restore` copy production's data, and **migrations** carry schema changes, the same as in any release.
-# MAGIC 3. Access, synced tables, and point-in-time history don't come along. You set up access and synced tables again, and history starts over.
+# MAGIC 1. Create a project, its `production` branch, and a compute you can connect to.
+# MAGIC 2. Prove that a branch can't leave its project, then move the app the deliberate way.
+# MAGIC 3. Verify the copy, switch the app, and clean up everything the lab made.
 # MAGIC
-# MAGIC Here's the plan:
-# MAGIC
-# MAGIC 0. Set up your tools.
-# MAGIC 1. Build the old home: production with two databases, access rules, a dev branch, and a synced table.
-# MAGIC 2. Promote a change the everyday way: a migration, no data.
-# MAGIC 3. Build the new home with a bundle, and watch the obvious shortcut fail.
-# MAGIC 4. Move the data, check it, rebuild access, and switch the app. Then rebuild the dev branch.
-# MAGIC 5. See what stays behind.
-# MAGIC 6. Get the checklist for doing it for real.
-# MAGIC 7. Clean up.
-# MAGIC
-# MAGIC It runs on Databricks serverless in about 4 minutes. It installs what it needs as it goes, creates two small Lakebase projects in **this workspace**, and deletes them at the end. You don't need a second workspace. (If you have one and want to try the real thing, you can pick it in **Choose your setup**.)
+# MAGIC Attach serverless compute and go cell by cell, or click **Run all** for a demo. A full run takes about 4 minutes and deletes its two small projects at the end.
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Before you start
 # MAGIC
-# MAGIC * **Use serverless compute.** The notebook asks for environment version 5, and versions 1 through 4 passed too. We haven't tested a classic cluster.
-# MAGIC * **You need permission to create Lakebase projects.**
-# MAGIC * **Go cell by cell, or click Run all.** To learn it, run one cell at a time with Shift+Enter and read the text above each one first. To demo it, click **Run all** and read along as the outputs come in.
-# MAGIC * **If a run stops partway, clean up.** Jump to **Module 7** at the bottom and run its two cells. They delete whatever the lab made, even from a half-finished run. (If the notebook has restarted or detached since, first run the cells from the top through **Module 0**.)
+# MAGIC * Use **serverless compute**. Classic compute hasn't been tested.
+# MAGIC * You need permission to create Lakebase projects.
+# MAGIC * Use Shift+Enter to learn or **Run all** to watch the whole move.
+# MAGIC * If a run stops, use the two cleanup cells in **Module 7**. After a restart or detach, run from the top through **Module 0** first.
 # MAGIC
-# MAGIC ### Choose your setup
+# MAGIC ### Setup (the defaults are fine)
 # MAGIC
-# MAGIC Run the next cell. It puts three boxes at the top. **Leave them as they are** to keep both homes in this workspace.
-# MAGIC
-# MAGIC 1. **New home goes to**: **This workspace** is the default. Pick **Another workspace** only if you have a second one and want to try that.
-# MAGIC 2. **Other workspace URL**: ignore this unless you picked another workspace.
-# MAGIC 3. **Catalog**: for the synced-table steps. The default is `main`. If you can't create a schema there, pick one you can, or leave it: the lab skips those steps and says why.
-# MAGIC
-# MAGIC Change a box, then run the cell again. (A second workspace also asks for a token in a hidden box and keeps it in a secret scope of your own.)
+# MAGIC Run the next cell. It adds a few boxes at the top, already set for the simplest path: both projects in **this workspace**, with `main` for an optional synced-table exercise. Leave them as they are on your first run. You don't need to read the cell's code: with these defaults, all it does is add the boxes. If you can't create a schema in `main`, that exercise skips and the rest of the lab still runs.
 
 # COMMAND ----------
 
-# DBTITLE 1,Choose your setup
+# DBTITLE 1,Choose your setup (defaults are fine)
 """Put the setup questions at the top of the notebook, and sign you in to the other workspace if you pick one.
 
 For another workspace, its URL and your token go in a secret scope of your own, lb-move-lab-<you>-<your user id>.
@@ -124,47 +107,11 @@ print("\nLeave the boxes as they are and click Run all, or change one and run th
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Why a branch can't just move
-# MAGIC
-# MAGIC A Lakebase **project** owns its storage and the history inside it. That history is what makes branches, point-in-time restore, and snapshots work. A **branch** is an instant copy of another branch *in the same project*, and it can't point anywhere else. So nothing in the API moves or exports a branch, not even to another project in the same workspace.
-# MAGIC
-# MAGIC ```
-# MAGIC Project                       owns the storage and its history
-# MAGIC  ├── Branch                   an instant copy of a branch in the SAME project
-# MAGIC  │    ├── Compute             what you connect to (its host)
-# MAGIC  │    └── Database            one or more per branch: databricks_postgres, reporting, ...
-# MAGIC  │         └── Schema → Tables      plain Postgres
-# MAGIC  ├── Point-in-time history    the restore window: 2 to 30 days, 7 by default
-# MAGIC  └── Snapshots                can only be restored inside this project
-# MAGIC ```
-# MAGIC
-# MAGIC So "promoting to another workspace" really means **rebuilding** there, and each piece comes from its own place:
-# MAGIC
-# MAGIC | Piece | On the new side, it comes from |
-# MAGIC |---|---|
-# MAGIC | Project, branches, computes | a **bundle**: `databricks bundle deploy` |
-# MAGIC | Schema | your **migrations** (in a move, production's schema comes along in its dump) |
-# MAGIC | Data | `pg_dump` and `pg_restore`, one database at a time, and **only** when the data has to move |
-# MAGIC | Synced tables | created again on the new side, where they refill from the lakehouse |
-# MAGIC | Roles, ownership, grants | your access script, run again |
-# MAGIC | Point-in-time history, snapshots | nothing: they start over |
-# MAGIC
-# MAGIC Most of the time you're **promoting**: deploy the bundle, run the migrations, and no data crosses over. You only **move** when the environment itself relocates (a new workspace, cloud, or region, or a newer Postgres major version). That's when the data comes along.
-# MAGIC
-# MAGIC 📖 Learn more: [Branches](https://docs.databricks.com/aws/en/oltp/projects/branches) ·
-# MAGIC [pg_dump and pg_restore](https://docs.databricks.com/aws/en/oltp/projects/pg-dump-restore) ·
-# MAGIC [Bundle resources](https://docs.databricks.com/aws/en/dev-tools/bundles/resources)
-
-# COMMAND ----------
-
-# MAGIC %md
 # MAGIC ## Module 0: Set up your tools
 # MAGIC
 # MAGIC ### Install the Python libraries
 # MAGIC
-# MAGIC We install the **Databricks SDK**, to create projects and branches and get login tokens, and **psycopg**, the standard Python driver for Postgres, at the versions this lab was tested with. Lakebase is plain Postgres, so ordinary Postgres tools work. The next cell restarts Python so they load.
-# MAGIC
-# MAGIC Under the install cell, expect two notices, and keep going: a note to restart Python, which the next cell does, and an orange **Core Python package version(s) changed** box, because the install upgrades the Databricks SDK that serverless comes with. On older serverless versions, pip may also print a red dependency-conflict note about `protobuf`. It comes from a preinstalled package the lab doesn't use, so you can ignore it.
+# MAGIC Install the Databricks SDK for Lakebase and `psycopg` for Postgres, then restart Python so they load. The restart note and orange **Core Python package version(s) changed** box are expected. On older serverless versions, you can also ignore a `protobuf` dependency-conflict note from a preinstalled package this lab doesn't use.
 
 # COMMAND ----------
 
@@ -179,11 +126,7 @@ dbutils.library.restartPython()
 # MAGIC %md
 # MAGIC ### Install `pg_dump` and `pg_restore`
 # MAGIC
-# MAGIC A move copies each database with `pg_dump` and loads it with `pg_restore`. They're the standard Postgres tools, but serverless doesn't ship them, and you can't run `apt-get` there. So this cell downloads the official client package from the [PostgreSQL project's own package repository](https://apt.postgresql.org) and unpacks it on local disk. No admin rights needed.
-# MAGIC
-# MAGIC One rule to know: the client has to be the same version as your database's Postgres, or newer. The lab's projects run Postgres 17, so we install the version 17 client.
-# MAGIC
-# MAGIC The download also brings **libpq**, the Postgres client library, which psycopg uses too. (We skip psycopg's all-in-one `binary` package, because its built-in OpenSSL crashes on some serverless machines.)
+# MAGIC A move copies each database with the standard Postgres tools `pg_dump` and `pg_restore`. Serverless doesn't include them, so this cell downloads and unpacks the Postgres 17 client locally; it needs no admin rights.
 
 # COMMAND ----------
 
@@ -259,7 +202,7 @@ for tool in ("pg_dump", "pg_restore"):
 # MAGIC %md
 # MAGIC ### Install the Databricks CLI
 # MAGIC
-# MAGIC The new home gets built by a **bundle**, and you deploy bundles with the Databricks CLI: `databricks bundle deploy`, the same command you'd run from your laptop or a CI pipeline. This cell downloads the CLI from [GitHub](https://github.com/databricks/cli/releases) into a temp folder. It signs in as **you**, with a token from this notebook's own sign-in, and it never prints the token.
+# MAGIC Later, a bundle will build the new project. This cell downloads the Databricks CLI that runs `databricks bundle deploy`; it uses this notebook's sign-in and never prints its token.
 
 # COMMAND ----------
 
@@ -299,12 +242,7 @@ print(subprocess.run([str(CLI), "--version"], capture_output=True, text=True).st
 # MAGIC %md
 # MAGIC ### Connect, name things, and set up helpers
 # MAGIC
-# MAGIC This cell does four things:
-# MAGIC
-# MAGIC * **Connects to Databricks.** In Lakebase, **your Databricks identity is your Postgres user**, and you log in with a short-lived token instead of a password. Every connection here gets a fresh token, so nothing expires mid-lab.
-# MAGIC * **Names the two projects after you**, so a whole team can run the lab in one workspace: `lb-move-old-…` is the **old home** and `lb-move-new-…` is the **new home**.
-# MAGIC * **Sets up helpers** we'll reuse. One takes a database's **fingerprint**: for each table, its row count and a checksum of all its rows. That's how we'll prove two copies have the same rows.
-# MAGIC * **Defines the app's migrations:** numbered SQL changes, run in order and recorded in a history table. That's what Flyway or Liquibase does for a real app.
+# MAGIC Connect to Databricks, give the two projects names that are unique to you, and define the migrations and checks used later. In Lakebase, your Databricks identity is your Postgres user, and its password is a short-lived token, so every connection here gets a fresh one.
 
 # COMMAND ----------
 
@@ -704,9 +642,17 @@ print("New home:", NEW_ID, "in", w_new.config.host + (f" (another workspace, as 
 # COMMAND ----------
 
 # DBTITLE 1,Create the old home's project
-"""Create (or reuse) the old home's project, then wait for its production compute to get a host."""
+"""Create (or reuse) the old home's project, wait for its production compute to get a host, and link to it in Lakebase."""
 create_project(OLD_ID, OLD_LABEL)
 print("Production compute:", endpoint_of(OLD_ID, "production")[1])
+# The Lakebase UI finds a project by its uid, not its name.
+project_uid = client(OLD_ID).postgres.get_project(name=project_path(OLD_ID)).uid
+print("See it in Lakebase Postgres:", f"{client(OLD_ID).config.host.rstrip('/')}/lakebase/projects/{project_uid}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC **First Lakebase checkpoint:** you now have a real project. It owns a `production` branch, and that branch has a compute: the host printed above is the address an app connects to. If you're going cell by cell, open the link above to see the project and its branch in Lakebase Postgres. (To find it yourself later, click the grid icon at the top right, then **Lakebase Postgres**.)
 
 # COMMAND ----------
 
@@ -1111,7 +1057,22 @@ except Exception as e:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **No.** A branch's parent has to be in the same project. That is true even inside one workspace, and nothing in the API moves or exports a branch. The bundle already rebuilt the project and its branches. Next, we copy the data on purpose.
+# MAGIC **No.** A branch's parent has to be in the same project, even when both projects are in one workspace.
+# MAGIC
+# MAGIC ```
+# MAGIC Project                    owns its storage and history
+# MAGIC  └── Branch                an instant copy inside this project
+# MAGIC       ├── Compute          the connection host
+# MAGIC       └── Database         ordinary Postgres schemas and tables
+# MAGIC ```
+# MAGIC
+# MAGIC Nothing in the API moves or exports that branch. Rebuilding the new side is deliberate: the **bundle** creates its project, branches, and computes; the production dump supplies schema and data; access and synced tables are recreated; point-in-time history and snapshots stay behind.
+# MAGIC
+# MAGIC Most releases are simpler **promotions**: deploy the same definitions and run the same migrations, with no production data crossing over. A **move** is for relocating the environment or changing its Postgres major version. The bundle has rebuilt the empty new home; next, we copy production's data on purpose.
+# MAGIC
+# MAGIC 📖 [Branches](https://docs.databricks.com/aws/en/oltp/projects/branches) ·
+# MAGIC [pg_dump and pg_restore](https://docs.databricks.com/aws/en/oltp/projects/pg-dump-restore) ·
+# MAGIC [Bundle resources](https://docs.databricks.com/aws/en/dev-tools/bundles/resources)
 
 # COMMAND ----------
 
@@ -1279,7 +1240,7 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **Prove the copy matches.** In every database, we compare the app schema's definitions (tables, columns, keys, indexes, constraints, and sequences, from a schema-only dump of each side), then every app table's fingerprint, then the watermark and the migration history. Everything should match. (Access, history, and synced tables aren't in this check, because they don't come along: that's the next few steps.)
+# MAGIC **Prove the copy matches.** In every database, we compare the app schema's definitions (tables, columns, keys, indexes, constraints, and sequences, from a schema-only dump of each side), then every app table's fingerprint (its row count and a checksum of all its rows), then the watermark and the migration history. Everything should match. (Access, history, and synced tables aren't in this check, because they don't come along: that's the next few steps.)
 
 # COMMAND ----------
 

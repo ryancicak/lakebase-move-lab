@@ -4,9 +4,9 @@
 
 You only need one workspace. Two projects in it play old home and new home, because a branch can't leave its project. A second workspace is optional (see "Two-workspace mode" below).
 
-## Settings a learner can change
+## Optional settings
 
-The learner answers three questions in **Choose your setup**, the first code cell, which runs before the installs. The answers are widgets, the boxes at the top of the notebook, so they survive the Python restart and can be passed as job parameters:
+The first code cell is **Choose your setup (defaults are fine)**. A first-time learner leaves its three boxes unchanged: both projects stay in this workspace and the optional synced-table exercise uses `main`. The answers are widgets, so advanced users can change them, they survive the Python restart, and jobs can pass them as parameters:
 
 1. `where`, the box **1. New home goes to**: `This workspace` (the default) or `Another workspace`.
 2. `other_url`, the box **2. Other workspace URL**: only for another workspace.
@@ -19,9 +19,7 @@ Changing a box mid-lab (tested interactively, October 3): the widgets' default s
 
 ## Before Module 0
 
-- **Choose your setup** puts the three boxes at the top (with the serverless image's own Databricks SDK, before the installs), then prints `✅ Both homes stay in this workspace. Nothing else to set up.` and the catalog. For another workspace, it creates the secret scope `lb-move-lab-<slug>-<user id>` if it's missing, saves box 2's URL in it as `host`, and, if no token is stored, asks for one in a hidden box (Python's `getpass`, which shows a masked input under the cell). It signs in to check it, asking again up to twice if the token doesn't work, then prints `✅ The new home goes to another workspace, where you're signed in as <user there>.` In a job, nobody can answer the box: `getpass` raises `StdinNotImplementedError` right away, and the cell stops with the CLI command to store the token (tested). A service principal's `client-id` and `client-secret` in the scope work instead of a token.
-
-- **Why a branch can't just move** (markdown only): the project, branch, compute, and database tree, and where each piece comes from on the new side.
+- **Choose your setup (defaults are fine)** puts the three boxes at the top (with the serverless image's own Databricks SDK, before the installs), then prints `✅ Both homes stay in this workspace. Nothing else to set up.` and the catalog. The opening deliberately leaves the project/branch lecture until Module 3, after the learner has created real objects. For another workspace, the cell creates the secret scope `lb-move-lab-<slug>-<user id>` if it's missing, saves box 2's URL in it as `host`, and, if no token is stored, asks for one in a hidden box (Python's `getpass`, which shows a masked input under the cell). It signs in to check it, asking again up to twice if the token doesn't work, then prints `✅ The new home goes to another workspace, where you're signed in as <user there>.` In a job, nobody can answer the box: `getpass` raises `StdinNotImplementedError` right away, and the cell stops with the CLI command to store one (tested). A service principal's `client-id` and `client-secret` in the scope work instead of a token.
 
 ## Module 0: Set up your tools
 
@@ -37,7 +35,7 @@ Changing a box mid-lab (tested interactively, October 3): the widgets' default s
 
 ## Module 1: Build the old home
 
-- **Step 1, Create the old home's project**: `Created project lb-move-old-... (Postgres 17)` and the production compute's host, in about 6 seconds. It reuses the project only if this session made it. A same-named project with the lab's tag stops the lab with `Project ... is left over from an earlier run of this lab. Run Module 7 (Clean up) to delete it, then start again.`; one without the tag stops it with `A project named ... already exists, and this lab didn't make it`. Nothing older gets reused, and nothing untagged gets deleted.
+- **Step 1, Create the old home's project**: `Created project lb-move-old-... (Postgres 17)`, the production compute's host, and `See it in Lakebase Postgres: https://<workspace>/lakebase/projects/<project uid>`, in about 6 seconds. The following **First Lakebase checkpoint** names the concrete model the learner now has: one project, its `production` branch, and that branch's compute host. Going cell by cell, the learner opens the link to see the project and its branch in the Lakebase Postgres UI. It reuses the project only if this session made it. A same-named project with the lab's tag stops the lab with `Project ... is left over from an earlier run of this lab. Run Module 7 (Clean up) to delete it, then start again.`; one without the tag stops it with `A project named ... already exists, and this lab didn't make it`. Nothing older gets reused, and nothing untagged gets deleted.
 - **Step 2, Migrate production to V2 and load data**: `applied V1: customers`, `applied V2: orders`, then 1,000 customers and 5,000 orders. Loads data only if the tables are empty.
 - **Step 3, Create the reporting database on production and load it**: `Created database reporting ...`; the databases are `databricks_postgres`, `postgres`, and `reporting`; 200 rows in `reporting`'s `app.stock`. This is there to show that `pg_dump` and `pg_restore` work one database at a time.
 - **Step 4, Set up roles, ownership, and read access in both databases**: creates `app_owner` and `app_reader` (both `NOLOGIN`) once, because roles belong to the branch, then sets ownership, grants, and default privileges in each database, because those belong to each database. Shows 4 tables, all owned by `app_owner` and readable by `app_reader`.
@@ -60,7 +58,7 @@ The deck's five steps for a move: put it all in Git; deploy the bundle and leave
   - `postgres_endpoints.development_primary` with `replace_existing: true`.
 - **Step 2: databricks bundle validate, then deploy**: `Validation OK!`, then `Created postgres_projects.app`, `Created postgres_branches.production`, `Created postgres_branches.development`, `Created postgres_endpoints.development_primary`, and `Resources: 4 created`. About 15 seconds. Before deploying, it runs the same leftover check as Step 1 on the new home, so a bundle never adopts a leftover. The bundle sets the new home's display name to the lab's tag.
 - **What the bundle built**: both computes' hosts, and new production has only `databricks_postgres` and `postgres`, with no app tables. It stays empty and un-migrated on purpose, because the restore brings the schema, the data, and the migration history together, and a restore into tables that already exist fails.
-- **Try to branch the new home from the old home's production**: `Rejected, as expected: source_branch field must point to the branch from the same Project`. That's the core lesson. Any other error prints `Unexpected error:` instead, because then the lesson didn't run.
+- **Try to branch the new home from the old home's production**: `Rejected, as expected: source_branch field must point to the branch from the same Project`. That's the core lesson. Any other error prints `Unexpected error:` instead, because then the lesson didn't run. The markdown immediately after the proof introduces the project → branch → compute/database tree and explains what a bundle, dump, access script, and new history supply during a rebuild.
 
 ## Module 4: Move the data
 
@@ -121,7 +119,7 @@ Pick **Another workspace** in **Choose your setup**, put its URL in box 2, and r
 
 ## The preflight notebook
 
-`lakebase_move_lab_preflight` runs before the lab, in about 2.5 minutes, as the same user and on the same compute the lab will use. It records 20 checks as ✅ pass, ⚠️ warning (the lab still runs, minus a step), ❌ fail (fix before the lab), or ⏭️ skipped (a check it depends on failed), each with a fix:
+`lakebase_move_lab_preflight` is an optional check for a workshop or restricted workspace. It runs in about 2.5 minutes, as the same user and on the same compute the lab will use. It records 20 checks as ✅ pass, ⚠️ warning (the lab still runs, minus a step), ❌ fail (fix before the lab), or ⏭️ skipped (a check it depends on failed), each with a fix:
 
 1. Serverless compute; Python packages (PyPI); PostgreSQL client tools (apt.postgresql.org); psycopg on the downloaded libpq; Databricks SDK and the Lakebase API; Databricks CLI (github.com); CLI signs in as you.
 2. No leftovers from an earlier lab run: the lab's projects, schema, or bundle folder. `CLEAN_LEFTOVERS = True` in its settings cell deletes them.
