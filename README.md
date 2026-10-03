@@ -189,6 +189,13 @@ October 1 and 2, 2026, in an AWS us-west-2 workspace:
   - one attempt stopped in Module 0 when the CLI download from GitHub dropped partway, so the lab now retries its downloads. The same checks then passed as jobs, and the two-passes-in-one-session test passed again;
   - the final notebook, freshly imported, and again from a new Git folder cloned from this repo after the push: one uninterrupted Run all with the default answers passed all 38 code cells and cleaned up. As jobs, it also passed on environment versions 1 through 4 with the pinned packages, with the synced table on 1 and 2;
   - the preflight, run in the notebook UI: its Summary cell used to show only a raw JSON line, because returning the results replaced that cell's output. The results now come back from their own last cell, so the Summary shows the table and the verdict. As a job, it still returns the JSON that Genie Code reads.
+- **Re-checked, October 3,** on the final notebook:
+  - a run stopped right after Module 4's synced-table move, as a service principal: Module 7 refused the destroy while the guard was on, then deleted the synced table, both projects, and the schema;
+  - a run stopped right after Module 3's deploy, then restarted and run again from the top through Module 0, as a workspace user with a catalog that doesn't exist: Module 7 deleted both projects and the bundle folder;
+  - the download retries, against a fake network that drops: each download got through after one or two drops, and gave a clear message after three;
+  - environment versions 1 through 4, with each run printing what it ran on: 1.13 (Python 3.10, Ubuntu 22.04), 2.5 (Python 3.11, Ubuntu 22.04), 3.6 and 4.10 (Python 3.12, Ubuntu 24.04), all with the pinned packages, and with the synced table on 1 and 2;
+  - interactively, as a workspace user, in a fresh import: with a catalog the user owns in box 3, Run all passed all 38 code cells, with the synced table;
+  - in a new session, changing a box made Databricks re-run the helpers cell before the cells above it had run, and it failed with `NameError: name 'os' is not defined`. It now stops with a note to click Run all, and Run all then passed again. Clicking Run all right after a box change can bring up Databricks' **Cancel existing executions?** dialog; **Yes** runs everything.
 
 ## License
 

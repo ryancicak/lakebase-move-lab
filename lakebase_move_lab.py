@@ -320,6 +320,11 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+# Databricks runs this cell on its own when a box at the top changes, even before the cells above have run.
+if "PG_LIB" not in globals() or "CLI" not in globals():
+    raise RuntimeError("This cell needs the tools from the cells above, and they haven't run in this session yet. "
+                       "Click Run all, or run the cells from the top.")
+
 # psycopg's pure-Python mode finds libpq by asking ctypes for "pq". Answer with the copy we unpacked.
 os.environ["PSYCOPG_IMPL"] = "python"
 _find_library = ctypes.util.find_library
