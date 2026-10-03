@@ -86,7 +86,7 @@ else:
 | Check | What a problem means for the lab | Fix |
 |---|---|---|
 | Serverless compute (warning) | The lab was tested on serverless only | Attach serverless compute |
-| Python packages (PyPI) | The lab's first cell fails | Allow serverless compute to reach PyPI, or a PyPI mirror |
+| Python packages (PyPI) | The lab's install cell fails | Allow serverless compute to reach PyPI, or a PyPI mirror |
 | PostgreSQL client tools (apt.postgresql.org) | No `pg_dump` or `pg_restore`, so no move | Allow serverless compute to reach apt.postgresql.org over HTTPS |
 | psycopg on the downloaded libpq | The lab can't connect to Postgres | Send the error to the lab's owner |
 | Databricks SDK and the Lakebase API | Nothing in the lab works | Lakebase must be available in the workspace's region, with permission to use it |
@@ -111,5 +111,5 @@ else:
 
 ## If the cell itself fails
 
-- Permission denied on `runs/submit`, or serverless jobs aren't enabled: ask the user to open the `lakebase_move_lab_preflight` notebook (from the lab's Git folder, or import it from the repo) and click Run all. Its last cell prints the same summary.
+- Permission denied on `runs/submit`, or serverless jobs aren't enabled: ask the user to open the `lakebase_move_lab_preflight` notebook (from the lab's Git folder, or import it from the repo) and click Run all. Its **Summary** cell shows the same results.
 - The job can't reach GitHub as a Git source: import `lakebase_move_lab_preflight.py` from the repo into the same folder as the current notebook, then run the cell again. It uses a copy next to the notebook first.

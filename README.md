@@ -5,18 +5,17 @@ SPDX-License-Identifier: Apache-2.0
 
 # Lakebase Move Lab
 
-One notebook that walks you through promoting and moving a Lakebase environment, one cell at a time, on real Lakebase projects. It's the hands-on companion to the *Promote Lakebase across workspaces* deck: the deck explains the why, and this notebook lets you actually do it. It also works on its own, because every cell tells you what it's doing and why.
+One notebook that walks you through promoting and moving a Lakebase environment, one cell at a time, on real Lakebase projects. It's the hands-on companion to the *Promote Lakebase across workspaces* deck: the deck explains the why, and this notebook lets you actually do it. It also works on its own: each step explains what it's doing and why.
 
-**The short version:** you can't move a Lakebase branch. So you rebuild the environment in the new place, with a bundle for the project and branches and migrations for the schema, and you copy the data with `pg_dump` and `pg_restore` only when it has to come along. This lab takes you through all of it, start to finish.
-
-> **License:** Apache-2.0
+**The short version:** you can't move a Lakebase branch. So you rebuild the environment in the new place: a bundle creates the project and branches, `pg_dump` and `pg_restore` copy the data when it has to come along, and migrations carry schema changes, as in any release. This lab takes you through all of it, start to finish.
 
 ## Quick start
 
-1. **Optional, but worth it: check your workspace first.** The [preflight](#before-the-lab-run-the-preflight) takes about 3 minutes and tells you what to fix before you start.
-2. **Get the notebook** into your workspace. Clone this repo as a Git folder, or download `lakebase_move_lab.py` and import it (Workspace, then Import). Attach serverless compute.
-3. **Answer two questions.** Run the first code cell, **Choose your setup**. Boxes show up at the top of the notebook: where the new home goes (**This workspace**, the default, or **Another workspace**), and the catalog for the synced-table steps.
-4. **Go through it.** Cell by cell with Shift+Enter is best for learning; **Run all** works as a demo. It takes about 5 minutes and cleans up after itself at the end.
+1. **Get the notebook** into your workspace. Clone this repo as a Git folder, or download `lakebase_move_lab.py` and import it (Workspace, then Import). Attach serverless compute.
+2. **Run Choose your setup.** Leave the boxes at the defaults so both homes stay in this workspace. Change the catalog only if you need a different one for the synced-table steps.
+3. **Go through it.** Cell by cell with Shift+Enter is best for learning; **Run all** works as a demo. A full run is about 4 minutes, and the last module deletes everything it made.
+
+Running it with a group? The [preflight](#before-the-lab-run-the-preflight) checks the workspace first, in about 3 minutes, and tells you what to fix.
 
 If a run stops partway, scroll to **Module 7** and run its two cells: they clean up whatever the lab made. (If the notebook has restarted or detached since, first run the cells from the top through **Module 0**.)
 
@@ -41,7 +40,7 @@ lakebase-move-lab/
 └── README.md
 ```
 
-The lab is one notebook on purpose. There's nothing else to keep next to it, so you can import one file and run it. The preflight is separate because you run it before the lab.
+To run the lab, you only need `lakebase_move_lab.py`. The preflight and the Genie Code skills are optional.
 
 ## What you'll do
 
@@ -49,12 +48,12 @@ The lab is one notebook on purpose. There's nothing else to keep next to it, so 
 1. **Build the old home:** production with two databases (`databricks_postgres` and `reporting`), access roles, a dev branch with unreleased work, and a synced table fed from a Delta table.
 2. **Promote** a change the everyday way: a migration, no data.
 3. **Build the new home with a real `databricks bundle deploy`**, then try to branch across projects and see the error that explains everything.
-4. **Move production's data:** pause writes (simulated, with a check that nothing else is writing), dump and restore each database, prove the app schema and every app table match, recreate the synced table, rebuild access, pass a final check, and switch the app. You'll see how long writes were paused. Then rebuild the dev branch ("delete, redeploy, then migrate") and bring back its own work.
+4. **Move production's data:** pause writes, dump and restore each database, and prove the copy matches. Recreate the synced table, rebuild access, pass a final check, and switch the app; you'll see how long writes were paused. Then rebuild the dev branch (delete, redeploy, migrate) and bring back its own work.
 5. **See what stays behind:** point-in-time history and snapshots.
 6. **Doing it for real:** a checklist for a real move.
 7. **Clean up:** watch `prevent_destroy` refuse a `bundle destroy`, then remove the guard and delete everything.
 
-Two projects in one workspace stand in for two workspaces. A branch can't leave its project, even inside one workspace, so two projects teach the same core rebuild pattern. A real move between workspaces adds other identities, another metastore, and a different network path; the lab calls these out, and the next section shows how to do the real thing.
+You only need one workspace. Two projects in it play old home and new home, because a branch can't leave its project. A second workspace is optional.
 
 ## Optional: use a real second workspace
 
@@ -88,7 +87,7 @@ The preflight, `lakebase_move_lab_preflight`, tries everything the lab needs, th
 
 It takes about 3 minutes, uses one throwaway project, `lb-move-pre-<you>-<id>-<timestamp>` (one in each workspace, if you use two), and deletes it. There are three ways to run it:
 
-1. **Run the notebook.** Open `lakebase_move_lab_preflight`, attach serverless compute, run its first cell, **Choose your setup**, with the answers you'll give the lab, and click Run all. The last cell says ✅ ready, ⚠️ ready with notes, or ❌ not ready, with a fix for each problem.
+1. **Run the notebook.** Open `lakebase_move_lab_preflight`, attach serverless compute, run its first cell, **Choose your setup**, with the answers you'll give the lab, and click Run all. The **Summary** cell at the end says ✅ ready, ⚠️ ready with notes, or ❌ not ready, with a fix for each problem.
 2. **Ask Genie Code.** Add the skills once (below), open Genie Code in any notebook, and ask: *"Check that this workspace is ready for the Lakebase Move Lab."* Genie Code adds one cell that runs the preflight as a one-time serverless job, then explains the results and the fixes. It asks before running code, unless you've set Genie Code to auto-approve.
 3. **Paste one cell.** The cell in [`skills/lakebase-move-lab-preflight/SKILL.md`](skills/lakebase-move-lab-preflight/SKILL.md) runs the preflight from any notebook and prints the results. It uses a copy of the preflight next to your notebook if there is one, and otherwise runs it straight from this repo.
 
@@ -103,7 +102,7 @@ You'll see two skills, switched on: `lakebase-move-lab-preflight` and `lakebase-
 
 ## Ask the lab expert
 
-The expert is a Genie Code skill that knows this lab and the playbook behind it, in and out: what every cell does and what its output should look like, why each step works the way it does, what an error means and how to fix it, and how to do a real move between workspaces. Every point in an answer says where it comes from: tested in the lab, tested in the runs behind it, the Databricks docs, or not tested.
+The expert is a Genie Code skill that knows this lab and the playbook behind it: what every cell does and what its output should look like, why each step works the way it does, what an error means and how to fix it, and how to do a real move between workspaces. Every point in an answer says where it comes from: tested in the lab, tested in the runs behind it, the Databricks docs, or not tested.
 
 Add it with the preflight skill (above), start a new chat, and ask away. A few to try:
 
@@ -117,7 +116,7 @@ It answers questions, and it won't create or change anything unless you ask. Rea
 
 ## Requirements
 
-- **Serverless compute with internet access.** The notebook downloads the PostgreSQL 17 client tools (`pg_dump`, `pg_restore`, and `libpq`, which psycopg also uses) from [apt.postgresql.org](https://apt.postgresql.org) and the Databricks CLI from [GitHub](https://github.com/databricks/cli/releases), and unpacks them locally. No admin rights needed. A classic cluster with internet access should work too, but we haven't tested one.
+- **Serverless compute with internet access.** The notebook downloads the PostgreSQL 17 client tools (`pg_dump`, `pg_restore`, and `libpq`, which psycopg also uses) from [apt.postgresql.org](https://apt.postgresql.org) and the Databricks CLI from [GitHub](https://github.com/databricks/cli/releases), and unpacks them locally. No admin rights needed. We haven't tested a classic cluster.
 - **Permission to create Lakebase projects.**
 - **For the optional synced-table steps:** `CREATE SCHEMA` on a Unity Catalog catalog (default `main`). Pick another one in **Choose your setup**. Without it, the lab skips those steps and says why.
 - **For another workspace:** a personal access token from it (or a service principal), and permission to create a secret scope here, which every user has by default.
@@ -134,7 +133,7 @@ Your numeric user id is in every name, so two learners whose user names start al
 
 Module 7 deletes all of it, including after a run that stopped partway, and it only deletes projects with the lab's tag. The bundle sets `purge_on_delete`, and the old project is deleted with `purge=True`, so the project names are free right away.
 
-The preflight creates the project `lb-move-pre-<you>-<id>-<timestamp>`, the schema `<catalog>.lb_move_pre_<you>_<timestamp>`, and the bundle folder `~/.bundle/lb-move-lab-preflight-<timestamp>`, and deletes them before it finishes. Every run gets its own names, so two runs at once don't collide, and a run cleans up anything an earlier one left behind once it's over 30 minutes old. If an earlier lab run left its projects, schema, or bundle folder behind, the preflight tells you. Set `CLEAN_LEFTOVERS = True` in its settings cell to delete them.
+The preflight creates the project `lb-move-pre-<you>-<id>-<timestamp>`, the schema `<catalog>.lb_move_pre_<you>_<timestamp>`, and the bundle folder `~/.bundle/lb-move-lab-preflight-<timestamp>`, and deletes them before it finishes. Every run gets its own names, so two runs at once don't collide. Preflight leftovers older than 30 minutes get deleted by the next preflight. If an earlier lab run left its projects, schema, or bundle folder behind, the preflight tells you. Set `CLEAN_LEFTOVERS = True` in its settings cell to delete them.
 
 ## Key Lakebase facts the lab shows
 
@@ -158,7 +157,7 @@ October 1 and 2, 2026, in an AWS us-west-2 workspace:
   - an interactive **Run all** by a workspace user, in a notebook freshly imported from this repo's URL.
 
   Each run took about 4 minutes, every check passed, and the teardown left nothing behind.
-- **The lab with a real second workspace,** from an AWS workspace to an Azure workspace, as a serverless job and interactively: every cell passed, both databases restored with exit code 0 across clouds, the gate passed 7 of 7, writes were paused for 44 to 57 seconds (tiny synthetic data, not an estimate), and the teardown cleaned up both workspaces. The synced-table step skipped, as designed, because the two workspaces have separate metastores. The first try failed at the first Postgres connection: serverless sent the Azure compute's hostname to a Databricks proxy, which answered `FATAL: External authorization failed`. Connecting to the compute's public address worked, so the lab falls back to it when the normal route is refused.
+- **The lab with a real second workspace,** from an AWS workspace to an Azure workspace, as a serverless job and interactively: every cell passed, both databases restored with exit code 0 across clouds, the last checklist passed 7 of 7, writes were paused for 44 to 57 seconds (tiny synthetic data, not an estimate), and the teardown cleaned up both workspaces. The synced-table step skipped, as designed, because the two workspaces have separate metastores. The first try failed at the first Postgres connection: serverless sent the Azure compute's hostname to a Databricks proxy, which answered `FATAL: External authorization failed`. Connecting to the compute's public address worked, so the lab falls back to it when the normal route is refused.
 - **Choose your setup:**
   - interactively, as a workspace user: picking **Another workspace** re-ran the cell on its own and asked for the URL; entering it brought up the hidden token box; a wrong token got "That token didn't work" and a second box; with a working token, the cell signed in, and **Run all** moved everything to the Azure workspace, using the catalog from box 3, then deleted the scope;
   - as jobs: the default answers ran the one-workspace lab; **Another workspace** with no token stored stopped in about a minute with the CLI command to store one, instead of hanging; with a token stored, the whole lab ran.
@@ -179,6 +178,17 @@ October 1 and 2, 2026, in an AWS us-west-2 workspace:
   - a run stopped on purpose right after Module 3's deploy, interactively as a workspace user: Module 7's two cells deleted both projects, the synced table, the schema, and the bundle folder, once in the same session and once after re-running the cells from the top through Module 0;
   - the preflight: ✅ 20 of 20 in one workspace, and ⚠️ with a second workspace (25 passed, plus the separate-metastore note), reporting that the new home needed its public address;
   - Genie Code, after narrowing the expert skill's description: a Postgres upgrade question and a question about restoring a dump into a second root branch still loaded it, and questions about autoscaling sizes and service-principal OAuth access went to Genie Code's built-in Lakebase guidance instead.
+- **After a second review, October 2,** with the final notebook and the pinned packages (databricks-sdk 0.146.0, psycopg 3.3.6), as jobs in two AWS workspaces:
+  - the lab with the default answers, as a service principal with the synced table and as a workspace user without `CREATE SCHEMA` on `main`: every cell passed, the last checklist passed 7 of 7, and the teardown left nothing behind;
+  - the lab twice in one Python session: Module 7, then Modules 1 to 7 again, then Module 7 a third time. The second pass made new projects and a new synced table, and its point-in-time branch was empty. A branch at the first pass's restore time was rejected, because that new home didn't exist yet. The third cleanup found nothing, deployed nothing, and left nothing behind;
+  - the preflight: ✅ 20 of 20 for the service principal, and ⚠️ for the workspace user (no `CREATE SCHEMA` on `main`).
+- **As a first-time user, October 3:** a workspace user imported the notebook into a new folder and ran it in the notebook UI, following only the README and the notebook's own text:
+  - Run all with the default answers: every cell passed. The user had only `USE CATALOG` on `main`, so the synced-table steps were skipped with a clear note;
+  - with a catalog the user owns in box 3, Run all passed with the synced table, in about 3 minutes;
+  - cell by cell: after the skip, the user put that catalog in box 3 and ran Step 6 again, which synced the table mid-lab. A second change to box 3 was refused with a clear note, changing it back was accepted, and the rest of the lab passed and cleaned up;
+  - one attempt stopped in Module 0 when the CLI download from GitHub dropped partway, so the lab now retries its downloads. The same checks then passed as jobs, and the two-passes-in-one-session test passed again;
+  - the final notebook, freshly imported: one uninterrupted Run all with the default answers passed all 38 code cells and cleaned up. As jobs, it also passed on environment versions 1 through 4 with the pinned packages, with the synced table on 1 and 2;
+  - the preflight, run in the notebook UI: its Summary cell used to show only a raw JSON line, because returning the results replaced that cell's output. The results now come back from their own last cell, so the Summary shows the table and the verdict. As a job, it still returns the JSON that Genie Code reads.
 
 ## License
 

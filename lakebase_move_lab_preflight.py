@@ -3,12 +3,8 @@
 # [tool.databricks.environment]
 # environment_version = "5"
 # ///
-# Copyright 2026 Databricks, Inc.
-# SPDX-License-Identifier: Apache-2.0
-
-# COMMAND ----------
-
 # MAGIC %md
+# MAGIC <!-- Copyright 2026 Databricks, Inc. SPDX-License-Identifier: Apache-2.0 -->
 # MAGIC # Lakebase Move Lab: preflight check
 # MAGIC
 # MAGIC Run this **before** the lab. In about 3 minutes, it tries everything the lab needs, the same way the lab does it, and tells you exactly what to fix. That way nobody hits a wall halfway through.
@@ -21,15 +17,15 @@
 # MAGIC * **Synced tables:** you can create a schema in the lab's catalog and sync a Delta table into Lakebase.
 # MAGIC * **Cleanup:** `prevent_destroy` guards the bundle, and everything this check creates gets deleted.
 # MAGIC * **Leftovers:** nothing from an earlier lab run is still around.
-# MAGIC * **A second workspace (optional):** if you'll put the lab's new home in another workspace, it checks that one too.
+# MAGIC * **A second workspace (optional):** skip this unless you'll put the lab's new home in another workspace.
 # MAGIC
-# MAGIC It creates one small throwaway project, `lb-move-pre-…`, and deletes it at the end. Run it the way you'll run the lab: on serverless, as yourself. The last cell gives you the verdict: ✅ ready, ⚠️ ready with notes, or ❌ fix these first.
+# MAGIC It creates one small throwaway project, `lb-move-pre-…`, and deletes it at the end. Run it the way you'll run the lab: on serverless, as yourself. The **Summary** cell at the end gives you the verdict: ✅ ready, ⚠️ ready with notes, or ❌ fix these first.
 # MAGIC
 # MAGIC > You can also ask **Genie Code** to run this check and explain the results. The repo's README shows how.
 # MAGIC
 # MAGIC ### Choose your setup
 # MAGIC
-# MAGIC Run the next cell. It puts the lab's three boxes at the top: **New home goes to** (**This workspace** or **Another workspace**), **Other workspace URL**, and **Catalog** (for the synced-table steps). Answer them the way you will in the lab, then click **Run all**. For another workspace, the cell asks for a token in a hidden box the first time and keeps it in a secret scope of your own, and the lab uses the same one.
+# MAGIC Run the next cell. Leave the boxes at the defaults to keep both homes in this workspace, then click **Run all**. Pick **Another workspace** only if you have a second one and want to check that path too.
 
 # COMMAND ----------
 
@@ -103,7 +99,7 @@ if dbutils.widgets.get("where") == OTHER:
     except Exception as e:
         print(f"⚠️ {e}\n   The checks below report it too, with the fix.")
 else:
-    print("✅ The new home goes in this workspace, as a second project. Nothing else to set up.")
+    print("✅ Both homes stay in this workspace. Nothing else to set up.")
 print("   Catalog for the synced-table steps:", dbutils.widgets.get("catalog").strip() or "main")
 print("\nChange a box at the top and run this cell again, or click Run all.")
 
@@ -112,11 +108,11 @@ print("\nChange a box at the top and run this cell again, or click Run all.")
 # MAGIC %md
 # MAGIC ### Install the Python libraries
 # MAGIC
-# MAGIC Same install as the lab's first cell. If this fails, the lab's will too, and that usually means serverless can't reach PyPI. Ask your workspace admin to allow PyPI, or a PyPI mirror, for serverless compute.
+# MAGIC Same install as the lab's. The orange **Core Python package version(s) changed** box it shows is expected, because it upgrades the Databricks SDK that serverless comes with, and the next cell restarts Python. If this fails, the lab's will too, and that usually means serverless can't reach PyPI. Ask your workspace admin to allow PyPI, or a PyPI mirror, for serverless compute.
 
 # COMMAND ----------
 
-# MAGIC %pip install --quiet -U "databricks-sdk>=0.81.0" "psycopg>=3.1" "protobuf<6"
+# MAGIC %pip install --quiet -U "databricks-sdk==0.146.0" "psycopg==3.3.6" "protobuf<6"
 
 # COMMAND ----------
 
@@ -249,7 +245,7 @@ def _():
     return detail
 
 
-@check("Python packages (PyPI)", "Allow serverless compute to reach PyPI, or a PyPI mirror. The lab's first cell installs the same packages.")
+@check("Python packages (PyPI)", "Allow serverless compute to reach PyPI, or a PyPI mirror. The lab installs the same packages.")
 def _():
     import importlib.metadata as md
     sdk = md.version("databricks-sdk")
@@ -258,15 +254,25 @@ def _():
     return f"databricks-sdk {sdk}, psycopg {md.version('psycopg')}, protobuf {md.version('protobuf')}"
 
 
+def download(url):
+    """Read a file from the internet, and try again if the connection drops partway (the lab does the same)."""
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                return response.read()
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(5)
+
+
 def install_pg_client(version=PG_VERSION):
     """Fetch postgresql-client-<version> and libpq5 from apt.postgresql.org and unpack them locally (the lab's installer)."""
     os_release = dict(line.strip().split("=", 1) for line in open("/etc/os-release") if "=" in line)
     codename = os_release["VERSION_CODENAME"].strip('"')
     arch = {"x86_64": "amd64", "aarch64": "arm64"}[platform.machine()]
     repo = "https://apt.postgresql.org/pub/repos/apt"
-    index = gzip.decompress(
-        urllib.request.urlopen(f"{repo}/dists/{codename}-pgdg/main/binary-{arch}/Packages.gz", timeout=60).read()
-    ).decode()
+    index = gzip.decompress(download(f"{repo}/dists/{codename}-pgdg/main/binary-{arch}/Packages.gz")).decode()
     wanted = {f"postgresql-client-{version}": None, "libpq5": None}
     for block in index.split("\n\n"):
         fields = dict(l.split(": ", 1) for l in block.splitlines() if ": " in l and not l.startswith(" "))
@@ -278,7 +284,7 @@ def install_pg_client(version=PG_VERSION):
     root = Path(tempfile.mkdtemp(prefix="pgclient-"))
     for package, filename in wanted.items():
         deb = root / Path(filename).name
-        urllib.request.urlretrieve(f"{repo}/{filename}", deb)
+        deb.write_bytes(download(f"{repo}/{filename}"))
         subprocess.run(["dpkg-deb", "-x", str(deb), str(root / "files")], check=True)
     bin_dir = root / "files" / "usr" / "lib" / "postgresql" / str(version) / "bin"
     lib_dir = next((root / "files" / "usr" / "lib").glob("*-linux-gnu"))
@@ -331,7 +337,7 @@ def _():
     arch = {"x86_64": "amd64", "aarch64": "arm64"}[platform.machine()]
     url = f"https://github.com/databricks/cli/releases/download/v{CLI_VERSION}/databricks_cli_{CLI_VERSION}_linux_{arch}.zip"
     CLI_DIR = Path(tempfile.mkdtemp(prefix="dbcli-"))
-    with zipfile.ZipFile(io.BytesIO(urllib.request.urlopen(url, timeout=120).read())) as z:
+    with zipfile.ZipFile(io.BytesIO(download(url))) as z:
         z.extract("databricks", CLI_DIR)
     CLI = CLI_DIR / "databricks"
     CLI.chmod(0o755)
@@ -972,12 +978,14 @@ def _():
         pg_table = PRE_SYNCED.split(".", 1)[1]  # the schema.table name inside Postgres
         while True:
             status = w.postgres.get_synced_table(name=f"synced_tables/{PRE_SYNCED}").status
-            state = str(status.detailed_state) if status else "unknown"
+            state = status.detailed_state.value if status and status.detailed_state else "unknown"
             try:
                 with connect("production") as conn:
                     rows = conn.execute(f"SELECT count(*) FROM {pg_table}").fetchone()[0]
             except Exception:
                 rows = 0
+            if "FAILED" in state:
+                raise RuntimeError(f"the sync failed: state {state}, {rows} rows")
             if rows >= 10 and "ONLINE" in state:
                 break
             if time.time() - started > 600:
@@ -1063,12 +1071,12 @@ def _():
 # MAGIC %md
 # MAGIC ### Summary
 # MAGIC
-# MAGIC Every check, its result, and the fix for anything that isn't ✅. The notebook also returns these results, so Genie Code or a job can read them.
+# MAGIC Every check, its result, and the fix for anything that isn't ✅. The last cell returns these results, so Genie Code or a job can read them.
 
 # COMMAND ----------
 
 # DBTITLE 1,Summary
-"""Show every check with its result and fix, print the verdict, and return the results to whoever ran this notebook."""
+"""Show every check with its result and fix, and print the verdict."""
 fails = [r for r in RESULTS if r["status"] == "fail"]
 warns = [r for r in RESULTS if r["status"] == "warn"]
 VERDICT = "not ready" if fails else ("ready with notes" if warns else "ready")
@@ -1080,5 +1088,10 @@ print({
     "ready with notes": "⚠️ Ready for the lab, with the notes above.",
     "not ready": f"❌ Not ready: fix the {len(fails)} item(s) marked ❌, then run this check again.",
 }[VERDICT])
+
+# COMMAND ----------
+
+# DBTITLE 1,Return the results to Genie Code or a job
+"""Hand the results back as JSON. In its own cell, because exiting replaces the cell's output in an interactive run."""
 dbutils.notebook.exit(json.dumps({"verdict": VERDICT, "user": globals().get("USER"), "catalog": CATALOG,
                                   "second_workspace": SECOND_WORKSPACE, "results": RESULTS}))
