@@ -187,7 +187,7 @@ October 1 and 2, 2026, in an AWS us-west-2 workspace:
   - with a catalog the user owns in box 3, Run all passed with the synced table, in about 3 minutes;
   - cell by cell: after the skip, the user put that catalog in box 3 and ran Step 6 again, which synced the table mid-lab. A second change to box 3 was refused with a clear note, changing it back was accepted, and the rest of the lab passed and cleaned up;
   - one attempt stopped in Module 0 when the CLI download from GitHub dropped partway, so the lab now retries its downloads. The same checks then passed as jobs, and the two-passes-in-one-session test passed again;
-  - the final notebook, freshly imported: one uninterrupted Run all with the default answers passed all 38 code cells and cleaned up. As jobs, it also passed on environment versions 1 through 4 with the pinned packages, with the synced table on 1 and 2;
+  - the final notebook, freshly imported, and again from a new Git folder cloned from this repo after the push: one uninterrupted Run all with the default answers passed all 38 code cells and cleaned up. As jobs, it also passed on environment versions 1 through 4 with the pinned packages, with the synced table on 1 and 2;
   - the preflight, run in the notebook UI: its Summary cell used to show only a raw JSON line, because returning the results replaced that cell's output. The results now come back from their own last cell, so the Summary shows the table and the verdict. As a job, it still returns the JSON that Genie Code reads.
 
 ## License
