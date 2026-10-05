@@ -7,32 +7,29 @@ SPDX-License-Identifier: Apache-2.0
 
 Lakebase is managed Postgres in Databricks. This hands-on notebook creates two small Lakebase projects in **one workspace**, shows why a branch can't move from one project to another, and rebuilds the environment the way a real move does.
 
-You don't need a second workspace or any Lakebase experience. A full **Run all** takes about 4 minutes and deletes everything it creates at the end. It's the hands-on companion to the *Promote Lakebase across workspaces* deck.
+You don't need a second workspace or any Lakebase experience. A full **Run all** takes a couple of minutes (about 4 if the synced-table steps run) and deletes everything it creates at the end. It's the hands-on companion to the *Promote Lakebase across workspaces* deck.
 
 ## Start here
 
 You need:
 
-- **Serverless compute with internet access**
+- **Notebook serverless compute** (this notebook’s compute dropdown: **Serverless**, not a SQL warehouse and not a classic cluster), with internet access
+- **Lakebase Postgres** in the product switcher (the grid, top right). If it isn’t listed, stop; this lab will not run.
 - **Permission to create Lakebase projects**
 
 Then:
 
-1. **Get the notebook.** In your Databricks workspace, choose **Workspace → Create → Git folder** and clone `https://github.com/ryancicak/lakebase-move-lab`, or download `lakebase_move_lab.py` and import it (in **Workspace**, open the **⋮** menu, then **Import**).
-2. **Open `lakebase_move_lab` and attach serverless compute.** Its first code cell adds a few setup boxes at the top, already set to **This workspace** and catalog `main`. Leave them as they are for your first run.
-3. **Run it.** Use Shift+Enter and read each short explanation to learn, or click **Run all** for the four-minute demo.
+1. **Get the notebook.** Workspace → **Create** → **Git folder** → GitHub → `https://github.com/ryancicak/lakebase-move-lab` → branch `main`. Open `lakebase_move_lab` (the `.py` file is a Databricks notebook). Or import only that file: in a folder, **⋮ → Import**, and choose the raw `lakebase_move_lab.py`, not a ZIP of the repo.
+2. **Attach Serverless.** Run the first code cell, **Choose your setup**. It adds three boxes. Leave **This workspace**, leave box 2 empty, and leave catalog `main` unless you already know you can’t create a schema there: then put a catalog you own in box 3 so the optional synced-table steps run.
+3. **Run it.** Shift+Enter through the **First Lakebase checkpoint** if you want to open the project link (Run all deletes the projects at the end unless you set `CONFIRM_TEARDOWN = False` in Module 7). Or click **Run all** for the short demo.
 
-Your first checkpoint is a real Lakebase project, its `production` branch, and the compute host an app connects to, with a link to see it in Lakebase Postgres. A later cell tries the tempting shortcut, branching the new project from the old one, and shows the expected rejection.
+The synced-table exercise is optional. If you can’t create a schema in `main`, the notebook skips it with a note and completes the rest of the lab.
 
-The synced-table exercise is optional. If you can't create a schema in `main`, the notebook skips it with a note and completes the rest of the lab.
+If a run stops partway, **don’t click Run all**. Scroll to **Module 7: Clean up** and run its two cells. If Python restarted, run from the top through **Module 0** only, skip Modules 1–6, then Module 7.
 
-If a run stops partway, run the two cells in **Module 7: Clean up**. If the notebook restarted or detached, first run from the top through **Module 0**, then run Module 7.
+Running it for a group? Run the [preflight](#optional-check-a-workspace-before-a-workshop) first. In about 3 minutes, it checks that the workspace can do everything the lab needs. One live run per Databricks identity: two copies as the same user share project names and collide.
 
-Running it for a group? Run the [preflight](#optional-check-a-workspace-before-a-workshop) first. In about 3 minutes, it checks that the workspace can do everything the lab needs.
-
-## Reference and advanced paths
-
-Everything below is optional for a first run. It covers the repository contents, the full module map, workshop preflight, Genie Code help, and a real second-workspace setup.
+**Stop here and open the notebook.** Everything below is optional.
 
 ## What's in here
 
@@ -109,7 +106,7 @@ It takes about 3 minutes, uses one throwaway project, `lb-move-pre-<you>-<id>-<t
 1. Clone this repo as a Git folder (Workspace, then Create, then Git folder).
 2. Open the Genie Code pane, then its **⋮** menu, then **Customizations**, then **Skills**.
 3. If you've never added a skill, click **Create skills folder** first.
-4. Click **Add skill**, paste the Git folder's `skills` path, for example `/Users/<you>/lakebase-move-lab/skills`, and click **Add folder**.
+4. Click **Add skill**, then paste the **workspace** Git folder’s `skills` path (copy it from the workspace tree). It looks like `/Users/you@company.com/lakebase-move-lab/skills` or `/Workspace/Users/you@company.com/lakebase-move-lab/skills`, not a folder on your laptop. Click **Add folder**. Skills need the Git folder; importing only `lakebase_move_lab.py` has no `skills` path.
 
 You'll see two skills, switched on: `lakebase-move-lab-preflight` and `lakebase-move-lab-expert`. Start a new chat after adding or changing skills. Genie Code picks the right one from your question, or you can mention one directly, like `@lakebase-move-lab-expert`. These steps were tested in the Genie Code UI on October 2, 2026. The Databricks docs also describe copying the skill folders into your own skills folder, `/Users/<you>/.assistant/skills/`, or a workspace admin putting them in `Workspace/.assistant/skills/` for everyone; we haven't tested those.
 

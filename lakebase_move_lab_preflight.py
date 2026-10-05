@@ -7,7 +7,7 @@
 # MAGIC <!-- Copyright 2026 Databricks, Inc. SPDX-License-Identifier: Apache-2.0 -->
 # MAGIC # Lakebase Move Lab: preflight check
 # MAGIC
-# MAGIC Run this **before** the lab. In about 3 minutes, it tries everything the lab needs, the same way the lab does it, and tells you exactly what to fix. That way nobody hits a wall halfway through.
+# MAGIC Run this **optional** check before a workshop or in a restricted workspace. A solo learner on a normal workspace can skip it and start with `lakebase_move_lab`. In about 3 minutes, it tries everything the lab needs, the same way the lab does it, and tells you exactly what to fix.
 # MAGIC
 # MAGIC It checks:
 # MAGIC
@@ -42,8 +42,8 @@ from databricks.sdk import WorkspaceClient
 
 THIS, OTHER = "This workspace", "Another workspace"
 dbutils.widgets.dropdown("where", THIS, [THIS, OTHER], "1. New home goes to")
-dbutils.widgets.text("other_url", "", "2. Other workspace URL")
-dbutils.widgets.text("catalog", "main", "3. Catalog")
+dbutils.widgets.text("other_url", "", "2. Other workspace URL (leave empty)")
+dbutils.widgets.text("catalog", "main", "3. Catalog for optional synced table")
 
 w = WorkspaceClient()
 me = w.current_user.me()
@@ -168,7 +168,8 @@ CLEAN_LEFTOVERS = False  # True deletes what an earlier lab run left behind (its
 PG_VERSION = 17  # the lab's Postgres version
 CLI_VERSION = "1.17.0"  # the CLI version the lab downloads
 
-RESULTS, PASSED = [], set()
+RESULTS = globals().get("RESULTS") or []
+PASSED = globals().get("PASSED") or set()
 ICON = {"pass": "✅", "warn": "⚠️", "fail": "❌", "skip": "⏭️"}
 
 
@@ -185,15 +186,19 @@ def check(name, fix, needs=()):
         else:
             try:
                 status, detail = "pass", fn() or ""
-                PASSED.add(name)
             except Warn as e:
                 status, detail = "warn", str(e)
             except Exception as e:
                 status, detail = "fail", brief(e, 450)
+        if status == "pass":
+            PASSED.add(name)
+        else:
+            PASSED.discard(name)
         detail = " ".join(str(detail).split())[:500]
-        RESULTS.append({"check": name, "status": status, "detail": detail,
-                        "fix": fix if status in ("warn", "fail") else "",
-                        "seconds": round(time.time() - started, 1)})
+        row = {"check": name, "status": status, "detail": detail,
+               "fix": fix if status in ("warn", "fail") else "",
+               "seconds": round(time.time() - started, 1)}
+        RESULTS[:] = [r for r in RESULTS if r["check"] != name] + [row]
         print(f"{ICON[status]} {name}: {detail}")
     return run
 
@@ -352,7 +357,7 @@ def cli(*args, cwd=None, ws=None):
         raise RuntimeError("couldn't get a token for the CLI from this notebook's sign-in")
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(CLI_DIR),
            "DATABRICKS_HOST": ws.config.host, "DATABRICKS_TOKEN": auth.split(" ", 1)[1]}
-    result = subprocess.run([str(CLI), *args], env=env, cwd=cwd, capture_output=True, text=True)
+    result = subprocess.run([str(CLI), *args], env=env, cwd=cwd, capture_output=True, text=True, timeout=900)
     return result.returncode, (result.stdout + result.stderr).strip()
 
 
@@ -596,7 +601,7 @@ def connect(branch, dbname=DB, ws=None):
     for attempt in range(6):
         try:
             conn = psycopg.connect(host=host, dbname=dbname, user=NEW_USER if ws else USER, password=token,
-                                   sslmode="require", connect_timeout=30, autocommit=True,
+                                   sslmode="verify-full", connect_timeout=30, autocommit=True,
                                    **({"hostaddr": ROUTES[host]} if ROUTES.get(host) else {}))
             if ws:
                 ROUTES.setdefault(host, None)
@@ -617,10 +622,10 @@ def run_pg(tool, branch, args, dbname=DB, ws=None):
         connect(branch, dbname, ws=ws).close()  # finds out which route this compute needs
     token = (ws or w).postgres.generate_database_credential(endpoint=endpoint).token
     env = dict(PG_ENV, PGHOST=host, PGPORT="5432", PGUSER=NEW_USER if ws else USER, PGPASSWORD=token,
-               PGDATABASE=dbname, PGSSLMODE="require")
+               PGDATABASE=dbname, PGSSLMODE="verify-full", PGCONNECT_TIMEOUT="30")
     if ROUTES.get(host):
-        env["PGHOSTADDR"] = ROUTES[host]  # libpq still sends the hostname for TLS
-    result = subprocess.run([str(PG_BIN / tool), *args], env=env, capture_output=True, text=True)
+        env["PGHOSTADDR"] = ROUTES[host]  # TCP to this IP; hostname in PGHOST is still verified
+    result = subprocess.run([str(PG_BIN / tool), *args], env=env, capture_output=True, text=True, timeout=600)
     return result.returncode, result.stderr.strip()
 
 
@@ -976,13 +981,18 @@ def _():
                 create_database_objects_if_missing=True)),
             synced_table_id=PRE_SYNCED).wait()
         pg_table = PRE_SYNCED.split(".", 1)[1]  # the schema.table name inside Postgres
+        failures = 0
         while True:
             status = w.postgres.get_synced_table(name=f"synced_tables/{PRE_SYNCED}").status
             state = status.detailed_state.value if status and status.detailed_state else "unknown"
             try:
                 with connect("production") as conn:
                     rows = conn.execute(f"SELECT count(*) FROM {pg_table}").fetchone()[0]
+                failures = 0
             except Exception:
+                failures += 1
+                if failures >= 3:
+                    raise
                 rows = 0
             if "FAILED" in state:
                 raise RuntimeError(f"the sync failed: state {state}, {rows} rows")
@@ -1058,6 +1068,9 @@ def _():
                  if there]
     for folder in (WORK_DIR, BUNDLE_DIR, BUNDLE_DIR_NEW):
         shutil.rmtree(folder, ignore_errors=True)
+    if w_new is not None:
+        print(f"Left secret scope {scope} in place (the lab uses the same scope for a second workspace). "
+              "Delete it yourself if you're done with that token.")
     left += [name for name, there in ((f"project {PRE_ID}", project_exists(PRE_ID)),
                                       (f"schema {PRE_SCHEMA}", schema_exists(PRE_SCHEMA)),
                                       (f"folder {PRE_BUNDLE_ROOT}", folder_exists(PRE_BUNDLE_ROOT))) if there]
@@ -1079,10 +1092,20 @@ def _():
 """Show every check with its result and fix, and print the verdict."""
 fails = [r for r in RESULTS if r["status"] == "fail"]
 warns = [r for r in RESULTS if r["status"] == "warn"]
-VERDICT = "not ready" if fails else ("ready with notes" if warns else "ready")
-summary = pd.DataFrame(RESULTS)
-summary.insert(1, "result", summary.status.map(lambda s: f"{ICON[s]} {s}"))
-display(summary[["check", "result", "detail", "fix", "seconds"]])
+if not RESULTS:
+    VERDICT = "not ready"
+elif fails:
+    VERDICT = "not ready"
+elif warns:
+    VERDICT = "ready with notes"
+else:
+    VERDICT = "ready"
+if not RESULTS:
+    print("❌ The check didn't record any results. Run all from the top, then look at Summary again.")
+else:
+    summary = pd.DataFrame(RESULTS)
+    summary.insert(1, "result", summary.status.map(lambda s: f"{ICON[s]} {s}"))
+    display(summary[["check", "result", "detail", "fix", "seconds"]])
 print({
     "ready": "✅ Ready for the lab.",
     "ready with notes": "⚠️ Ready for the lab, with the notes above.",

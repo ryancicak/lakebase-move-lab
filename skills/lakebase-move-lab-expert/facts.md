@@ -1,6 +1,6 @@
 # Facts, numbers, and where they come from
 
-This is the canonical list. When another reference file disagrees with it on a fact or a number, this file wins. To change a fact, change it here first, then the files that repeat it: `SKILL.md`, `lab-walkthrough.md`, `playbook.md`, and `troubleshooting.md`. Times and counts here come from small synthetic databases in a few specific setups, not estimates for a real move.
+This is the canonical list. When another reference file disagrees with it on a fact or a number, this file wins. To change a fact, change it here first, then the files that repeat it: `SKILL.md`, `lab-walkthrough.md`, `playbook.md`, `troubleshooting.md`, and `README.md`. Times and counts here come from small synthetic databases in a few specific setups, not estimates for a real move.
 
 Tags: **[lab]** tested in the lab (October 1 and 2, 2026); **[runs]** tested in the runs behind the lab, five moves from an AWS workspace to an Azure workspace (September 28 to 30, 2026, PostgreSQL 17.11, Databricks CLI 1.17.0); **[docs]** from the Databricks docs, not tested; **[not tested]**.
 
@@ -68,7 +68,8 @@ Tags: **[lab]** tested in the lab (October 1 and 2, 2026); **[runs]** tested in 
 
 ## The lab itself
 
-- Runs on serverless environment version 5 (pinned), and passed on versions 1 through 4: Python 3.10 to 3.12, x86 and ARM, Ubuntu 22.04 and 24.04. A full run takes about 4 to 5 minutes. [lab]
+- Runs on serverless environment version 5 (pinned), and passed on versions 1 through 4: Python 3.10 to 3.12, x86 and ARM, Ubuntu 22.04 and 24.04. A full run takes about 2 minutes without the synced-table steps, about 4 with them. [lab]
+- The preflight notebook takes about 3 minutes. [lab]
 - The lab pins its packages: databricks-sdk 0.146.0, psycopg 3.3.6, and the Databricks CLI 1.17.0. The final October 2 runs used those, with protobuf 5.29.6 and the PostgreSQL 17.9 client tools. With the pins, the lab passed again on environment versions 1 through 4 on October 3, and once more on the final notebook, with each run printing its runtime: `client.1.13` (Python 3.10.12), `client.2.5` (3.11.10), `client.3.6` and `client.4.10` (3.12.3). Version 1 (Ubuntu 22.04) printed pip's red note that `googleapis-common-protos` wants protobuf below 5. In the notebook UI, version 5 shows an orange `Core Python package version(s) changed` box after the install (`databricks-sdk: 0.67.0 -> 0.146.0`). Both are harmless, and the lab says to expect them. [lab]
 - In an interactive run, `dbutils.notebook.exit` replaces its cell's output with `Notebook exited: <value>`. That hid the preflight's summary table and verdict until the exit moved to a cell of its own (October 3). [lab]
 - The lab ran twice in one Python session: Module 7, then Modules 1 to 7 again. The second pass made new projects and a new restore time, and running Module 7 a third time found nothing and deployed nothing. [lab]

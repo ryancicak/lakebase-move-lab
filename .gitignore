@@ -13,3 +13,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Local agent scratch (job exports, etc.)
+.tmp/

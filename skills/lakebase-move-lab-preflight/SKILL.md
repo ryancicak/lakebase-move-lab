@@ -1,6 +1,6 @@
 ---
 name: lakebase-move-lab-preflight
-description: Checks that this Databricks workspace is ready for the Lakebase Move Lab before anyone runs it, and says what to fix. Use when the user asks to validate, preflight, or readiness-check the Lakebase Move Lab, or to make sure the lab will work in this workspace. Do not use to run the lab itself, to explain how the lab works or why a lab step failed (use lakebase-move-lab-expert), or for general Lakebase questions.
+description: Checks that this Databricks workspace is ready for the Lakebase Move Lab before a workshop, and says what to fix. Use when the user asks to validate, preflight, or readiness-check the Lakebase Move Lab. Do not use to install, import, or run the lab (README Start here), to explain how the lab works or why a lab step failed (use lakebase-move-lab-expert), or for general Lakebase questions. If they already have Summary or job output, do not run the cell; explain that output.
 ---
 
 <!--
@@ -16,13 +16,12 @@ This skill runs that notebook as a one-time serverless job and explains the resu
 
 ## Steps
 
-1. Tell the user in one or two sentences what will happen: a one-time serverless job that takes about 3 minutes and uses one throwaway Lakebase project, named `lb-move-pre-...`, which it deletes at the end. If the user named a catalog for the lab, use it; otherwise use `main`. If they'll put the lab's new home in another workspace, use that workspace's URL; otherwise leave it empty. (For another workspace, the token has to be stored already: the lab's or the preflight's first cell, **Choose your setup**, asks for it in a hidden box. If the sign-in check fails, tell them to run that cell once.)
-2. Add ONE Python cell with exactly the code in "The cell" below, changing only `CATALOG` and `OTHER_WORKSPACE_URL`, and run it. Don't split, shorten, or rewrite it. It waits for the job to finish, so it runs for a few minutes.
-3. When the cell finishes, answer from its output:
-   - First line: the verdict, one of ✅ Ready, ⚠️ Ready with notes, or ❌ Not ready.
+1. Tell the user in one or two sentences what will happen. Prefer: if `lakebase_move_lab_preflight` is already in their Git folder, they should attach serverless and click Run all. Only if they agree to a job, and the notebook is not already open, use the submit cell below: a one-time serverless job that takes about 3 minutes and uses one throwaway Lakebase project, named `lb-move-pre-...`, which it deletes at the end. If the user named a catalog for the lab, use it; otherwise use `main`. If they'll put the lab's new home in another workspace, use that workspace's URL; otherwise leave it empty. (For another workspace, the token has to be stored already: the lab's or the preflight's first cell, **Choose your setup**, asks for it in a hidden box. If the sign-in check fails, tell them to run that cell once.)
+2. If you use the job cell, add ONE Python cell with exactly the code in "The cell" below, changing only `CATALOG` and `OTHER_WORKSPACE_URL`, and run it. Don't split, shorten, or rewrite it. It waits for the job to finish, so it runs for a few minutes.
+3. When they already have Summary or job output, skip to explaining it. First line: the verdict, one of ✅ Ready, ⚠️ Ready with notes, or ❌ Not ready.
    - Then a short table of every check that isn't ✅: the check, what it means for the lab, and the fix. Use the fix from the output; the troubleshooting table below adds context.
    - Then the job run link from the output, for the full details.
-4. If anything failed, offer to help with the fix, and to run the check again afterward. Don't change workspace settings or permissions yourself.
+4. If leftovers failed, do not resubmit the job cell. Open `lakebase_move_lab_preflight`, set `CLEAN_LEFTOVERS = True` in Settings, re-run that settings cell, then leftovers, or click Run all; or run the lab’s Module 7. Don't change workspace settings or permissions yourself.
 
 ## The cell
 
@@ -92,7 +91,7 @@ else:
 | Databricks SDK and the Lakebase API | Nothing in the lab works | Lakebase must be available in the workspace's region, with permission to use it |
 | Databricks CLI (github.com) | No bundle steps | Allow serverless compute to reach github.com over HTTPS |
 | CLI signs in as you | No bundle steps | Send the error to the lab's owner |
-| No leftovers from an earlier lab run | The lab trips over old projects instead of starting clean | Run the lab's Module 7, or run the preflight notebook with `CLEAN_LEFTOVERS = True` |
+| No leftovers from an earlier lab run | The lab trips over old projects instead of starting clean | Do not resubmit the job cell. Open the preflight notebook, set `CLEAN_LEFTOVERS = True` in Settings, re-run that cell, then leftovers, or Run all. Or run the lab's Module 7 (do not click Run all on the lab; that hits the leftover error again) |
 | Bundle deploys a Lakebase project | The lab can't build its new home | Permission to create Lakebase projects, and a writable home folder (bundles keep state in `~/.bundle`) |
 | Connect with a login token | No Postgres access | A timeout points at the serverless network policy; anything else goes to the lab's owner |
 | Create a second database, Roles, ownership, and grants, pg_dump and a filtered pg_restore, Child branch and its compute, Point-in-time branch | That step of the lab fails | Send the error to the lab's owner |
@@ -101,7 +100,7 @@ else:
 | Synced table into Lakebase (warning) | The lab skips its synced-table steps | Read the error in the detail |
 | prevent_destroy guards the bundle, Cleanup | The lab's cleanup may not work | Delete what the detail lists, and send it to the lab's owner |
 | Second workspace: sign-in | The lab can't use the second workspace | No token stored yet, or it doesn't work there. Have the user open the lab (or the preflight notebook) and run its first cell, **Choose your setup**, with **Another workspace** and the URL: it asks for a token in a hidden box. Then run this check again |
-| Second workspace: no leftovers from an earlier lab run | The lab trips over an old new-home project there | Run the lab's Module 7, or run the preflight notebook with `CLEAN_LEFTOVERS = True` |
+| Second workspace: no leftovers from an earlier lab run | The lab trips over an old new-home project there | Do not resubmit the job cell. Open the preflight notebook, set `CLEAN_LEFTOVERS = True` in Settings, re-run that cell, then leftovers, or Run all. Or run the lab's Module 7 (do not click Run all on the lab) |
 | Second workspace: bundle deploys a Lakebase project | The lab can't build its new home there | Permission to create Lakebase projects in that workspace, and a writable home folder there |
 | Second workspace: connect from here | No Postgres access to the new home | The detail says which route worked: the normal one, or the compute's public address (found in dns.google or cloudflare-dns.com) after the normal route was refused. A timeout points at the serverless network policy |
 | Second workspace: restore a dump from this workspace | The move itself fails across workspaces | Send the error to the lab's owner |

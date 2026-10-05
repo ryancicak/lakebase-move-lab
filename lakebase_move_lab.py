@@ -7,7 +7,7 @@
 # MAGIC <!-- Copyright 2026 Databricks, Inc. SPDX-License-Identifier: Apache-2.0 -->
 # MAGIC # Lakebase Move Lab
 # MAGIC
-# MAGIC Lakebase is managed Postgres in Databricks. In this notebook you create two real Lakebase projects in **this workspace**, then rebuild an app from one project in the other. It's the hands-on version of the *Promote Lakebase across workspaces* deck.
+# MAGIC Lakebase is managed Postgres in Databricks. In this notebook you create two real Lakebase projects (both here by default), then rebuild an app from one project in the other. It's the hands-on version of the *Promote Lakebase across workspaces* deck.
 # MAGIC
 # MAGIC You will:
 # MAGIC
@@ -15,21 +15,21 @@
 # MAGIC 2. Prove that a branch can't leave its project, then move the app the deliberate way.
 # MAGIC 3. Verify the copy, switch the app, and clean up everything the lab made.
 # MAGIC
-# MAGIC Attach serverless compute and go cell by cell, or click **Run all** for a demo. A full run takes about 4 minutes and deletes its two small projects at the end.
+# MAGIC Attach serverless compute and go cell by cell, or click **Run all** for a demo. A full run takes a couple of minutes (about 4 if the synced-table steps run) and deletes its two small projects at the end.
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Before you start
 # MAGIC
-# MAGIC * Use **serverless compute**. Classic compute hasn't been tested.
-# MAGIC * You need permission to create Lakebase projects.
-# MAGIC * Use Shift+Enter to learn or **Run all** to watch the whole move.
-# MAGIC * If a run stops, use the two cleanup cells in **Module 7**. After a restart or detach, run from the top through **Module 0** first.
+# MAGIC * Use this notebook’s **Serverless** compute, not a SQL warehouse and not a classic cluster.
+# MAGIC * The product switcher (grid, top right) must list **Lakebase Postgres**, and you need permission to create projects.
+# MAGIC * Use Shift+Enter to learn or **Run all** to watch the whole move. Don’t change the boxes after you start: a change re-runs cells.
+# MAGIC * If a run stops, **don’t click Run all**. Scroll to **Module 7** and run its two cells. After a restart, run through **Module 0** only, skip Modules 1–6, then Module 7.
 # MAGIC
 # MAGIC ### Setup (the defaults are fine)
 # MAGIC
-# MAGIC Run the next cell. It adds a few boxes at the top, already set for the simplest path: both projects in **this workspace**, with `main` for an optional synced-table exercise. Leave them as they are on your first run. You don't need to read the cell's code: with these defaults, all it does is add the boxes. If you can't create a schema in `main`, that exercise skips and the rest of the lab still runs.
+# MAGIC Run the next cell. It adds a few boxes at the top, already set for the simplest path: both projects in **this workspace**, with `main` for an optional synced-table exercise. Leave them as they are on your first run. You don't need to read the cell's code: with these defaults, all it does is add the boxes. If you can't create a schema in `main`, that exercise skips and the rest of the lab still runs. To include it, put a catalog you own in box 3 before you click **Run all**.
 
 # COMMAND ----------
 
@@ -46,8 +46,8 @@ from databricks.sdk import WorkspaceClient
 
 THIS, OTHER = "This workspace", "Another workspace"
 dbutils.widgets.dropdown("where", THIS, [THIS, OTHER], "1. New home goes to")
-dbutils.widgets.text("other_url", "", "2. Other workspace URL")
-dbutils.widgets.text("catalog", "main", "3. Catalog")
+dbutils.widgets.text("other_url", "", "2. Other workspace URL (leave empty)")
+dbutils.widgets.text("catalog", "main", "3. Catalog for optional synced table")
 
 w = WorkspaceClient()
 me = w.current_user.me()
@@ -120,6 +120,24 @@ print("\nLeave the boxes as they are and click Run all, or change one and run th
 # COMMAND ----------
 
 dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# DBTITLE 1,Confirm Lakebase is available here
+"""Fail fast if this workspace can't list Lakebase projects, before the downloads."""
+from databricks.sdk import WorkspaceClient
+
+try:
+    _probe = WorkspaceClient()
+    _visible = sum(1 for _ in _probe.postgres.list_projects())
+except Exception as e:
+    raise RuntimeError(
+        "This workspace doesn't look like it can use Lakebase yet. Open the product switcher (grid, top right) "
+        "and check for Lakebase Postgres. If it's missing, or you don't have permission to create projects, "
+        "stop here — later cells will fail the same way. "
+        f"({type(e).__name__}: {' '.join(str(e).split())[:200]})"
+    ) from None
+print(f"Lakebase API answered as {_probe.current_user.me().user_name} ({_visible} project(s) visible).")
 
 # COMMAND ----------
 
@@ -273,6 +291,7 @@ finally:
     ctypes.util.find_library = _find_library
 
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.errors import NotFound
 from databricks.sdk.service.postgres import (
     Branch,
     BranchSpec,
@@ -362,6 +381,22 @@ SYNCED_TABLE = f"{LAB_SCHEMA}.product_catalog_synced"  # its copy inside Lakebas
 
 WORK_DIR = globals().get("WORK_DIR") or Path(tempfile.mkdtemp(prefix="lb_move_"))  # dump files for this session
 
+# Say now if the optional synced-table steps will skip, instead of waiting until Module 1 Step 6.
+if DO_SYNCED_TABLES:
+    try:
+        if not spark.sql(f"SHOW SCHEMAS IN {CATALOG} LIKE '{UC_SCHEMA}'").count():
+            spark.sql(f"CREATE SCHEMA {LAB_SCHEMA}")
+            spark.sql(f"DROP SCHEMA {LAB_SCHEMA} CASCADE")
+        print(f"Synced-table steps will use catalog {CATALOG}.")
+    except Exception as e:
+        reason = " ".join(str(e).split("JVM stacktrace")[0].split())
+        if any(s in reason for s in ("PERMISSION_DENIED", "NO_SUCH_CATALOG", "CATALOG_NOT_FOUND")):
+            DO_SYNCED_TABLES = False
+            print(f"Synced-table steps will skip: {reason[:220]}")
+            print("The rest of the lab still runs. To include them, put a catalog you own in box 3, then click Run all.")
+        else:
+            print("Couldn't probe the catalog for synced tables yet:", reason[:220])
+
 
 def project_path(pid):
     return f"projects/{pid}"
@@ -395,8 +430,10 @@ def claim(pid, label):
         return
     found = client(pid).postgres.get_project(name=project_path(pid)).status.display_name
     if found == label:
-        raise RuntimeError(f"Project {pid} is left over from an earlier run of this lab. Run Module 7 (Clean up) "
-                           "to delete it, then start again.")
+        raise RuntimeError(f"Project {pid} is left over from an earlier run of this lab. Do not click Run all: "
+                           "that hits this error again and never reaches cleanup. Scroll to Module 7 and run its "
+                           "two cells. If Python restarted, run from the top through Module 0 only, skip Modules "
+                           "1–6, then Module 7.")
     raise RuntimeError(f"A project named {pid} already exists, and this lab didn't make it (it's called {found!r}). "
                        "Delete or rename it, then start again.")
 
@@ -425,8 +462,11 @@ def create_branch(pid, branch, source="production"):
         client(pid).postgres.get_branch(name=branch_path(pid, branch))
         print(f"Branch {branch} already exists in {pid}")
         return
-    except Exception:
+    except NotFound:
         pass
+    except Exception as e:
+        if "RESOURCE_DOES_NOT_EXIST" not in str(e) and "NOT_FOUND" not in str(e).upper():
+            raise
     client(pid).postgres.create_branch(
         parent=project_path(pid),
         branch=Branch(spec=BranchSpec(source_branch=branch_path(pid, source), no_expiry=True)),
@@ -492,8 +532,8 @@ def connect(pid, branch, dbname=DB):
     elsewhere = TWO_WORKSPACES and pid == NEW_ID
     for attempt in range(6):
         try:
-            conn = psycopg.connect(host=host, dbname=dbname, user=pg_user(pid), password=token, sslmode="require",
-                                   connect_timeout=30, autocommit=True,
+            conn = psycopg.connect(host=host, dbname=dbname, user=pg_user(pid), password=token,
+                                   sslmode="verify-full", connect_timeout=30, autocommit=True,
                                    **({"hostaddr": ROUTES[host]} if ROUTES.get(host) else {}))
             if elsewhere:
                 ROUTES.setdefault(host, None)
@@ -539,11 +579,11 @@ def run_pg(tool, pid, branch, args, dbname=DB):
     if TWO_WORKSPACES and pid == NEW_ID and host not in ROUTES:
         connect(pid, branch, dbname).close()  # finds out which route this compute needs
     env = dict(PG_ENV, PGHOST=host, PGPORT="5432", PGUSER=pg_user(pid), PGPASSWORD=token,
-               PGDATABASE=dbname, PGSSLMODE="require")
+               PGDATABASE=dbname, PGSSLMODE="verify-full", PGCONNECT_TIMEOUT="30")
     if ROUTES.get(host):
-        env["PGHOSTADDR"] = ROUTES[host]  # libpq still sends the hostname for TLS
+        env["PGHOSTADDR"] = ROUTES[host]  # TCP to this IP; hostname in PGHOST is still verified
     started = time.time()
-    result = subprocess.run([str(PG_BIN / tool), *args], env=env, capture_output=True, text=True)
+    result = subprocess.run([str(PG_BIN / tool), *args], env=env, capture_output=True, text=True, timeout=600)
     return result.returncode, round(time.time() - started, 1), result.stderr.strip()
 
 
@@ -554,7 +594,7 @@ def cli(*args, cwd=BUNDLE_DIR):
         raise RuntimeError("Couldn't get a token for the CLI from this notebook's sign-in")
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(CLI_DIR),
            "DATABRICKS_HOST": w_new.config.host, "DATABRICKS_TOKEN": auth.split(" ", 1)[1]}
-    result = subprocess.run([str(CLI), *args], env=env, cwd=cwd, capture_output=True, text=True)
+    result = subprocess.run([str(CLI), *args], env=env, cwd=cwd, capture_output=True, text=True, timeout=900)
     return result.returncode, (result.stdout + result.stderr).strip()
 
 
@@ -807,13 +847,17 @@ show(query(OLD_ID, "production",
 """Create a 50-row Delta table in Unity Catalog, sync it into old production, and wait for the rows."""
 def wait_for_sync(pid, synced_name, pg_table, expected_rows, timeout=900):
     """Wait until the synced table is online and Postgres has every row."""
-    started = time.time()
+    started, failures = time.time(), 0
     while True:
         status = client(pid).postgres.get_synced_table(name=f"synced_tables/{synced_name}").status
         state = status.detailed_state.value if status and status.detailed_state else "unknown"
         try:
             rows = query(pid, "production", f"SELECT count(*) AS n FROM {pg_table}")["n"][0]
+            failures = 0
         except Exception:
+            failures += 1
+            if failures >= 3:
+                raise
             rows = 0
         if "FAILED" in state:
             raise RuntimeError(f"{synced_name} failed to sync: state {state}, {rows} rows")
@@ -1383,6 +1427,8 @@ checks = {
     "App smoke test (write and read)": smoke_ok,
 }
 show(pd.DataFrame([(k, "✅" if v else "❌") for k, v in checks.items()], columns=["check", "result"]))
+passed = sum(1 for v in checks.values() if v)
+print(f"{passed} of {len(checks)} checks passed.")
 assert all(checks.values()), "Don't switch: a check failed"
 print("All checks passed. Safe to switch.")
 
@@ -1561,9 +1607,11 @@ client(NEW_ID).postgres.create_branch(
                                   ttl=Duration(seconds=86400))),
     branch_id="before-the-move",
 ).wait()
-show(query(NEW_ID, "before-the-move", "SELECT to_regclass('app.orders') IS NOT NULL AS has_app_tables"))
-client(NEW_ID).postgres.delete_branch(name=branch_path(NEW_ID, "before-the-move"), purge=True).wait()
-print("(Deleted the before-the-move branch.)")
+try:
+    show(query(NEW_ID, "before-the-move", "SELECT to_regclass('app.orders') IS NOT NULL AS has_app_tables"))
+finally:
+    client(NEW_ID).postgres.delete_branch(name=branch_path(NEW_ID, "before-the-move"), purge=True).wait()
+    print("(Deleted the before-the-move branch.)")
 
 # COMMAND ----------
 
@@ -1594,16 +1642,26 @@ try:
     snapshot = f"{project_path(OLD_ID)}/snapshots/before-the-move"
     print("Created snapshot:", snapshot)
     try:
-        client(NEW_ID).postgres.create_branch(
-            parent=project_path(NEW_ID),
-            branch=Branch(spec=BranchSpec(source_snapshot=snapshot, no_expiry=True)),
-            branch_id="from-old-snapshot",
-        ).wait()
-        print("Unexpected: the branch was created")
-    except Exception as e:
-        print("Rejected, as expected:" if "same project" in str(e).lower() else "Unexpected error:")
-        print("  ", str(e)[:300])
-    client(OLD_ID).postgres.delete_snapshot(name=snapshot).wait()
+        try:
+            client(NEW_ID).postgres.create_branch(
+                parent=project_path(NEW_ID),
+                branch=Branch(spec=BranchSpec(source_snapshot=snapshot, no_expiry=True)),
+                branch_id="from-old-snapshot",
+            ).wait()
+            print("Unexpected: the branch was created")
+            try:
+                client(NEW_ID).postgres.delete_branch(
+                    name=branch_path(NEW_ID, "from-old-snapshot"), purge=True).wait()
+            except Exception as e:
+                print("Couldn't delete the unexpected from-old-snapshot branch:", str(e)[:200])
+        except Exception as e:
+            print("Rejected, as expected:" if "same project" in str(e).lower() else "Unexpected error:")
+            print("  ", str(e)[:300])
+    finally:
+        try:
+            client(OLD_ID).postgres.delete_snapshot(name=snapshot).wait()
+        except Exception as e:
+            print("Couldn't delete snapshot before-the-move:", str(e)[:200])
 except Exception as e:
     print("Couldn't create a snapshot here, so skipping this demo:", str(e)[:200])
 
@@ -1694,7 +1752,7 @@ else:
 # MAGIC
 # MAGIC This cell takes `prevent_destroy` out of the bundle file, redeploys, and runs `bundle destroy` for real. Because of `purge_on_delete`, the project is gone right away and its name is free for your next run. Then it deletes what the bundle never owned: the old home, the synced table, the Unity Catalog schema, and the local files. If you pointed the new home at another workspace, it also deletes that secret scope. Revoke the token there if you're done.
 # MAGIC
-# MAGIC `CONFIRM_TEARDOWN` is `True` in this cell, so **Run all** ends by deleting everything. To keep the projects and look around, change it to `False` **in this cell**, then run the cell.
+# MAGIC `CONFIRM_TEARDOWN` is `True` in this cell, so **Run all** ends by deleting everything. To keep the projects and look around, change it to `False` **in this cell**, then run the cell. If you stopped earlier, open the project link now: Run all will delete it. If you stop at a checkpoint, you still need Module 7.
 
 # COMMAND ----------
 
@@ -1709,11 +1767,18 @@ if "OLD_ID" not in globals():
 if not CONFIRM_TEARDOWN:
     print("Teardown skipped. Set CONFIRM_TEARDOWN = True to delete the lab's projects.")
 else:
-    try:
-        w.postgres.delete_synced_table(name=f"synced_tables/{SYNCED_TABLE}").wait()
-        print("Deleted the synced table")
-    except Exception:
-        print("No synced table to delete")
+    deleted_sync = False
+    sync_clients = [client(NEW_ID)]
+    if w is not sync_clients[0]:
+        sync_clients.append(w)
+    for who in sync_clients:
+        try:
+            who.postgres.delete_synced_table(name=f"synced_tables/{SYNCED_TABLE}").wait()
+            deleted_sync = True
+        except Exception as e:
+            if "NOT_FOUND" not in str(e).upper() and "does not exist" not in str(e).lower():
+                print(f"Couldn't delete synced table via {who.config.host}: {type(e).__name__}: {str(e)[:160]}")
+    print("Deleted the synced table" if deleted_sync else "No synced table to delete")
     tagged = project_exists(NEW_ID) and (
         client(NEW_ID).postgres.get_project(name=project_path(NEW_ID)).status.display_name == NEW_LABEL)
     if "write_bundle" in globals() and tagged:  # a deploy with no new home would build one just to destroy it
@@ -1742,8 +1807,8 @@ else:
             print("Couldn't drop the lab schema:", str(e)[:120])
     try:
         w_new.workspace.delete(BUNDLE_ROOT, recursive=True)  # only this lab's bundle folder
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Couldn't delete the bundle folder {BUNDLE_ROOT}: {type(e).__name__}: {str(e)[:160]}")
     if NEW_WORKSPACE_SECRETS:
         try:
             w.secrets.delete_scope(scope=NEW_WORKSPACE_SECRETS)  # the scope Choose your setup made for your token

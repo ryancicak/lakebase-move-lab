@@ -109,7 +109,7 @@ None of this comes with the dump. Set it up on the new production after the rest
 ## Where to run pg_dump and pg_restore
 
 - Anywhere that can reach both projects' computes and sign in to both workspaces. The live-app runs used a laptop and CI runners (tested).
-- From a Databricks notebook on serverless, in the one pair we tested (an AWS workspace's serverless reaching an Azure workspace's computes), the computes were refused by name. Lakebase hostnames resolved to a Databricks proxy, which answered `FATAL: External authorization failed`. Connecting to the compute's public address worked: look it up in public DNS and pass it as libpq's `hostaddr` (`PGHOSTADDR` for the tools), keeping the hostname in `host` for TLS (tested). Other pairs, like two workspaces in the same cloud or region, weren't tested, so try the normal route first and switch only on that error, the way the lab does. The lab's preflight shows which route your setup needs.
+- From a Databricks notebook on serverless, in the one pair we tested (an AWS workspace's serverless reaching an Azure workspace's computes), the computes were refused by name. Lakebase hostnames resolved to a Databricks proxy, which answered `FATAL: External authorization failed`. Connecting to the compute's public address worked: look it up in public DNS and pass it as libpq's `hostaddr` (`PGHOSTADDR` for the tools), keeping the hostname in `host` and using `sslmode=verify-full` (tested). Other pairs, like two workspaces in the same cloud or region, weren't tested, so try the normal route first and switch only on that error, the way the lab does. The lab's preflight shows which route your setup needs.
 
 ## Tokens and long dumps
 
