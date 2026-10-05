@@ -7,29 +7,32 @@
 # MAGIC <!-- Copyright 2026 Databricks, Inc. SPDX-License-Identifier: Apache-2.0 -->
 # MAGIC # Lakebase Move Lab
 # MAGIC
-# MAGIC Lakebase is managed Postgres in Databricks. In this notebook you create two real Lakebase projects (both here by default), then rebuild an app from one project in the other. It's the hands-on version of the *Promote Lakebase across workspaces* deck.
+# MAGIC Release coupons without bringing dev's test orders into production. Then move the app to a new home, with production's customers, orders, and stock data.
 # MAGIC
-# MAGIC You will:
-# MAGIC
-# MAGIC 1. Create a project, its `production` branch, and a compute you can connect to.
-# MAGIC 2. Prove that a branch can't leave its project, then move the app the deliberate way.
-# MAGIC 3. Verify the copy, switch the app, and clean up everything the lab made.
-# MAGIC
-# MAGIC Attach serverless compute and go cell by cell, or click **Run all** for a demo. A full run takes a couple of minutes (about 4 if the synced-table steps run) and deletes its two small projects at the end.
+# MAGIC Lakebase is managed Postgres in Databricks. You'll create two small projects, an **old home** and a **new home**, here in this workspace. SQL stands in for the ordering app; the database operations are real. There's no separate app or CI/CD pipeline to install.
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Before you start
 # MAGIC
-# MAGIC * Use this notebook’s **Serverless** compute, not a SQL warehouse and not a classic cluster.
-# MAGIC * The product switcher (grid, top right) must list **Lakebase Postgres**, and you need permission to create projects.
-# MAGIC * Use Shift+Enter to learn or **Run all** to watch the whole move. Don’t change the boxes after you start: a change re-runs cells.
-# MAGIC * If a run stops, **don’t click Run all**. Scroll to **Module 7** and run its two cells. After a restart, run through **Module 0** only, skip Modules 1–6, then Module 7.
+# MAGIC * Select **Serverless** in this notebook's compute dropdown. A SQL warehouse is a different kind of compute.
+# MAGIC * Open the grid icon at the top right. You need **Lakebase Postgres** there and permission to create projects. Use a workspace where you're allowed to create lab resources.
+# MAGIC * For your first run, use **Shift+Enter** to run one cell and move to the next. Read the short explanation above each cell; you can skim the helper code. **Run all** also works and takes a few minutes.
+# MAGIC
+# MAGIC **Run all includes cleanup.** To look at a project in Lakebase, open its link when you reach the first checkpoint. Don't change the setup boxes once the lab has started.
+# MAGIC
+# MAGIC If a run stops, follow **Module 7: Clean up** before trying again. Don't click Run all to recover a stopped run.
 # MAGIC
 # MAGIC ### Setup (the defaults are fine)
 # MAGIC
-# MAGIC Run the next cell. It adds a few boxes at the top, already set for the simplest path: both projects in **this workspace**, with `main` for an optional synced-table exercise. Leave them as they are on your first run. You don't need to read the cell's code: with these defaults, all it does is add the boxes. If you can't create a schema in `main`, that exercise skips and the rest of the lab still runs. To include it, put a catalog you own in box 3 before you click **Run all**.
+# MAGIC Run the next cell. Three boxes appear at the top:
+# MAGIC
+# MAGIC * **1. New home goes to:** leave **This workspace**.
+# MAGIC * **2. Other workspace URL:** leave it empty.
+# MAGIC * **3. Catalog:** leave `main`. This is only for the optional exercise that copies product data from the lakehouse into Lakebase.
+# MAGIC
+# MAGIC If you can't create a schema in `main`, that exercise skips and the rest still works. Already have a catalog you can use? Put its name in box 3 before starting. Save the second-workspace option for another run.
 
 # COMMAND ----------
 
@@ -41,6 +44,7 @@ The token is asked for in a hidden box. It's never shown, and it's never saved i
 """
 import getpass
 import re
+from urllib.parse import urlsplit
 
 from databricks.sdk import WorkspaceClient
 
@@ -55,13 +59,37 @@ slug = re.sub(r"[^a-z0-9]+", "-", me.user_name.split("@")[0].lower()).strip("-")
 scope = f"lb-move-lab-{slug}-{me.id}"  # your user id keeps it yours, even when user names start alike
 
 
+def workspace_url(value):
+    """Use the workspace's HTTPS host, even when someone pastes a link to a page inside it."""
+    parsed = urlsplit(value if "://" in value else "https://" + value)
+    host = parsed.hostname or ""
+    if (parsed.scheme != "https" or parsed.username or parsed.password or parsed.port
+            or host.startswith("accounts.")
+            or not host.endswith((".cloud.databricks.com", ".azuredatabricks.net", ".gcp.databricks.com"))):
+        raise ValueError("Use your Databricks workspace URL, starting with https://. "
+                         "Don't use an account-console address or a link to another site.")
+    return f"https://{host}"
+
+
+# A box change can run this cell before the helpers cell. Stop before changing the saved destination.
+if globals().get("LAB_CREATED") and (
+        dbutils.widgets.get("where") != WHERE
+        or (WHERE == OTHER and dbutils.widgets.get("other_url").strip().rstrip("/") != OTHER_URL)):
+    raise RuntimeError("The lab has already started with a different workspace choice. Change the box back "
+                       "to keep going. To use a new workspace, clean up in Module 7 first.")
+
+
 def ask_for_token(prompt):
     """A hidden box for the token. A job can't answer it, so then it says how to store the token instead."""
     try:
-        return getpass.getpass(prompt).strip()
+        token = getpass.getpass(prompt).strip()
     except Exception:
         raise RuntimeError("No working token for the other workspace yet. Run this cell yourself once, or store "
                            f"one with the Databricks CLI: databricks secrets put-secret {scope} token") from None
+    if not token:
+        raise ValueError("The token box was empty. Copy a personal access token from the other workspace, "
+                         "then run this cell again and paste it into the hidden box.")
+    return token
 
 
 def signed_in_as():
@@ -80,11 +108,15 @@ if dbutils.widgets.get("where") == OTHER:
     url = dbutils.widgets.get("other_url").strip().rstrip("/")
     if not url:
         raise ValueError("You picked another workspace. Put its URL in box 2 at the top, then run this cell again.")
-    url = "https://" + url.split("://")[-1]
+    url = workspace_url(url)
     if scope not in {s.name for s in w.secrets.list_scopes()}:
         w.secrets.create_scope(scope=scope)
-    w.secrets.put_secret(scope=scope, key="host", string_value=url)
     stored = {s.key for s in w.secrets.list_secrets(scope=scope)}
+    if "host" in stored and workspace_url(dbutils.secrets.get(scope, "host")) != url:
+        raise RuntimeError("This secret scope already points to a different workspace. Clean up the earlier lab "
+                           "with its original settings in Module 7 first. If you only ran preflight, delete the "
+                           f"scope: databricks secrets delete-scope {scope}")
+    w.secrets.put_secret(scope=scope, key="host", string_value=url)
     if not stored & {"token", "client-id"}:
         w.secrets.put_secret(scope=scope, key="token", string_value=ask_for_token(
             "Paste a personal access token from the other workspace (it stays hidden): "))
@@ -102,7 +134,8 @@ if dbutils.widgets.get("where") == OTHER:
 else:
     print("✅ Both homes stay in this workspace. Nothing else to set up.")
 print("   Catalog for the synced-table steps:", dbutils.widgets.get("catalog").strip() or "main")
-print("\nLeave the boxes as they are and click Run all, or change one and run this cell again.")
+print("\nFor your first run, press Shift+Enter and go cell by cell.")
+print("Run all works too, and deletes the lab resources at the end.")
 
 # COMMAND ----------
 
@@ -111,7 +144,9 @@ print("\nLeave the boxes as they are and click Run all, or change one and run th
 # MAGIC
 # MAGIC ### Install the Python libraries
 # MAGIC
-# MAGIC Install the Databricks SDK for Lakebase and `psycopg` for Postgres, then restart Python so they load. The restart note and orange **Core Python package version(s) changed** box are expected. On older serverless versions, you can also ignore a `protobuf` dependency-conflict note from a preinstalled package this lab doesn't use.
+# MAGIC These libraries let the notebook create Lakebase resources and talk to Postgres. Run the install cell, then the restart cell.
+# MAGIC
+# MAGIC The restart note and orange **Core Python package version(s) changed** box are expected. On older serverless versions, you may also see a `protobuf` conflict note from a preinstalled package this lab doesn't use.
 
 # COMMAND ----------
 
@@ -134,7 +169,7 @@ except Exception as e:
     raise RuntimeError(
         "This workspace doesn't look like it can use Lakebase yet. Open the product switcher (grid, top right) "
         "and check for Lakebase Postgres. If it's missing, or you don't have permission to create projects, "
-        "stop here — later cells will fail the same way. "
+        "stop here. Later cells will fail the same way. "
         f"({type(e).__name__}: {' '.join(str(e).split())[:200]})"
     ) from None
 print(f"Lakebase API answered as {_probe.current_user.me().user_name} ({_visible} project(s) visible).")
@@ -144,7 +179,9 @@ print(f"Lakebase API answered as {_probe.current_user.me().user_name} ({_visible
 # MAGIC %md
 # MAGIC ### Install `pg_dump` and `pg_restore`
 # MAGIC
-# MAGIC A move copies each database with the standard Postgres tools `pg_dump` and `pg_restore`. Serverless doesn't include them, so this cell downloads and unpacks the Postgres 17 client locally; it needs no admin rights.
+# MAGIC `pg_dump` saves a database to a file. `pg_restore` loads that file into another database. We'll use them for the move, not for the coupon release.
+# MAGIC
+# MAGIC Serverless doesn't include these tools, so this cell downloads and unpacks them. No admin rights needed. It should print a version number for each tool.
 
 # COMMAND ----------
 
@@ -220,7 +257,9 @@ for tool in ("pg_dump", "pg_restore"):
 # MAGIC %md
 # MAGIC ### Install the Databricks CLI
 # MAGIC
-# MAGIC Later, a bundle will build the new project. This cell downloads the Databricks CLI that runs `databricks bundle deploy`; it uses this notebook's sign-in and never prints its token.
+# MAGIC We'll describe the new project in a configuration file called a **bundle**, then ask Databricks to build it. The CLI is the command-line tool that runs that request.
+# MAGIC
+# MAGIC This cell downloads it and prints its version. It uses your notebook's sign-in, so there's no CLI login to set up.
 
 # COMMAND ----------
 
@@ -260,7 +299,9 @@ print(subprocess.run([str(CLI), "--version"], capture_output=True, text=True).st
 # MAGIC %md
 # MAGIC ### Connect, name things, and set up helpers
 # MAGIC
-# MAGIC Connect to Databricks, give the two projects names that are unique to you, and define the migrations and checks used later. In Lakebase, your Databricks identity is your Postgres user, and its password is a short-lived token, so every connection here gets a fresh one.
+# MAGIC This cell gives the projects names that are unique to you and defines the functions we'll use later. You don't have to read all of it to follow the lab.
+# MAGIC
+# MAGIC Before moving on, check **Signed in as**, **Old home**, and **New home** in the output. On this first run, both homes should list the workspace you're in. The notebook gets a fresh, short-lived Postgres login token for each connection; you don't need to manage one.
 
 # COMMAND ----------
 
@@ -273,13 +314,15 @@ import shutil
 import time
 import urllib.request
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import pandas as pd
 
 # Databricks runs this cell on its own when a box at the top changes, even before the cells above have run.
 if "PG_LIB" not in globals() or "CLI" not in globals():
     raise RuntimeError("This cell needs the tools from the cells above, and they haven't run in this session yet. "
-                       "Click Run all, or run the cells from the top.")
+                       "Run from the top through Module 0. If you're cleaning up, skip Modules 1 through 6 "
+                       "and run Module 7. Otherwise, continue cell by cell.")
 
 # psycopg's pure-Python mode finds libpq by asking ctypes for "pq". Answer with the copy we unpacked.
 os.environ["PSYCOPG_IMPL"] = "python"
@@ -326,6 +369,8 @@ def answer(name, default):
 # Databricks runs this cell again when a box at the top changes. Once the lab has made something, a change that
 # would lose track of it is refused: the new home's workspace, or the catalog the lab's schema is in.
 if globals().get("LAB_CREATED") and (answer("where", "") != WHERE or
+                                     (WHERE == "Another workspace"
+                                      and answer("other_url", "").rstrip("/") != OTHER_URL) or
                                      (LAB_SCHEMA in LAB_CREATED and answer("catalog", "main") != CATALOG)):
     raise RuntimeError("A box at the top changed after the lab started using it. To keep going, change it back. "
                        "To use the new answer, run Module 7 (Clean up), then click Run all.")
@@ -333,6 +378,7 @@ if globals().get("LAB_CREATED") and (answer("where", "") != WHERE or
 # From Choose your setup. For another workspace, its URL and your credentials there are in a secret scope
 # of your own: "host", plus "token", or "client-id" and "client-secret" for a service principal.
 WHERE = answer("where", "")
+OTHER_URL = answer("other_url", "").rstrip("/")
 NEW_WORKSPACE_SECRETS = f"lb-move-lab-{slug}-{me.id}" if WHERE == "Another workspace" else None
 
 
@@ -348,6 +394,10 @@ def sign_in_elsewhere(scope):
     if not host or not (token or client_id):
         raise ValueError(f"No URL or token stored for the other workspace yet (secret scope {scope}). "
                          "Run Choose your setup, the first code cell, and paste a token when it asks.")
+    url = OTHER_URL if "://" in OTHER_URL else "https://" + OTHER_URL
+    if host.rstrip("/") != f"https://{urlsplit(url).hostname}":
+        raise RuntimeError("The saved workspace address doesn't match box 2. Put the original address back "
+                           "and clean up in Module 7 before choosing another workspace.")
     if client_id:
         return WorkspaceClient(host=host, client_id=client_id, client_secret=secret("client-secret"),
                                auth_type="oauth-m2m")
@@ -371,7 +421,7 @@ BUNDLE_NAME = "lb-move-lab"
 BUNDLE_DIR = globals().get("BUNDLE_DIR") or Path(tempfile.mkdtemp(prefix="lb_move_bundle_"))  # like a Git checkout
 BUNDLE_ROOT = f"/Workspace/Users/{NEW_USER}/.bundle/{BUNDLE_NAME}"  # in the new home's workspace
 
-# Optional synced-table steps (Module 1, Step 6 and Module 4, Step 4).
+# Optional synced-table steps (Module 1, Step 6 and Module 4's sync rebuild).
 DO_SYNCED_TABLES = True
 CATALOG = answer("catalog", "main")  # from Choose your setup: a catalog where you can create a schema
 UC_SCHEMA = f"lb_move_{slug.replace('-', '_')}_{me.id}"  # your user id keeps it yours
@@ -524,26 +574,31 @@ def connect(pid, branch, dbname=DB):
     """Open a Postgres connection to one database on a branch. Retries while the compute wakes up.
 
     For a compute in another workspace, the normal route comes first. In testing (serverless in an AWS workspace,
-    computes in an Azure one), Lakebase hostnames resolved to a Databricks proxy that refused them with
-    "External authorization failed", and the compute's public address worked. So on that error, the lab
-    switches that compute to its public address.
+    computes in an Azure one), Lakebase hostnames resolved to a Databricks proxy that either refused them with
+    "External authorization failed" or presented a certificate for the wrong hostname. On either error, the lab
+    tries that compute's public address, with the same hostname and certificate verification.
     """
     host, token = login(pid, branch)
     elsewhere = TWO_WORKSPACES and pid == NEW_ID
-    for attempt in range(6):
+    attempt = 0
+    while attempt < 6:
         try:
             conn = psycopg.connect(host=host, dbname=dbname, user=pg_user(pid), password=token,
-                                   sslmode="verify-full", connect_timeout=30, autocommit=True,
+                                   sslmode="verify-full", sslrootcert="system", connect_timeout=30, autocommit=True,
                                    **({"hostaddr": ROUTES[host]} if ROUTES.get(host) else {}))
             if elsewhere:
                 ROUTES.setdefault(host, None)
             return conn
         except psycopg.OperationalError as e:
-            if elsewhere and host not in ROUTES and "External authorization failed" in str(e):
+            message = str(e)
+            route_refused = "External authorization failed" in message or (
+                "server certificate for" in message and "does not match host name" in message)
+            if elsewhere and host not in ROUTES and route_refused:
                 ROUTES[host] = public_address(host)
                 print("(The normal route to a new-home compute was refused, so the lab uses its public address.)")
-                continue
-            if attempt == 5:
+                continue  # changing routes gets its own attempt, even on the last retry
+            attempt += 1
+            if attempt == 6:
                 raise
             time.sleep(10)
 
@@ -579,7 +634,7 @@ def run_pg(tool, pid, branch, args, dbname=DB):
     if TWO_WORKSPACES and pid == NEW_ID and host not in ROUTES:
         connect(pid, branch, dbname).close()  # finds out which route this compute needs
     env = dict(PG_ENV, PGHOST=host, PGPORT="5432", PGUSER=pg_user(pid), PGPASSWORD=token,
-               PGDATABASE=dbname, PGSSLMODE="verify-full", PGCONNECT_TIMEOUT="30")
+               PGDATABASE=dbname, PGSSLMODE="verify-full", PGSSLROOTCERT="system", PGCONNECT_TIMEOUT="30")
     if ROUTES.get(host):
         env["PGHOSTADDR"] = ROUTES[host]  # TCP to this IP; hostname in PGHOST is still verified
     started = time.time()
@@ -636,7 +691,7 @@ def migrate(pid, branch, up_to):
     """Apply every migration up to `up_to` that this branch hasn't had yet, and record it.
 
     Once the app_owner role exists, migrations run as that role (SET ROLE), so everything they
-    create belongs to it and picks up its default grants. That's the deck's "migrate as the owner role".
+    create belongs to it and picks up its default grants.
     """
     with connect(pid, branch) as conn:
         if not conn.execute("SELECT to_regclass('app.schema_migrations') IS NOT NULL").fetchone()[0]:
@@ -667,17 +722,9 @@ print("New home:", NEW_ID, "in", w_new.config.host + (f" (another workspace, as 
 # MAGIC %md
 # MAGIC ## Module 1: Build the old home
 # MAGIC
-# MAGIC First, let's build what a real team would have:
-# MAGIC
-# MAGIC * production, with the app's data in two databases and access rules;
-# MAGIC * a dev branch with unreleased work and test data;
-# MAGIC * a synced table fed from the lakehouse.
-# MAGIC
-# MAGIC This is what we'll move later.
-# MAGIC
 # MAGIC ### Step 1: Create the old project
 # MAGIC
-# MAGIC A **project** is the container. Creating one also creates its `production` branch and a compute to run your queries. It takes a few seconds.
+# MAGIC A **project** holds your Lakebase branches. Creating one gives you a `production` branch and a **compute**, which runs Postgres and provides the address you connect to. Let's create it.
 
 # COMMAND ----------
 
@@ -692,14 +739,20 @@ print("See it in Lakebase Postgres:", f"{client(OLD_ID).config.host.rstrip('/')}
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **First Lakebase checkpoint:** you now have a real project. It owns a `production` branch, and that branch has a compute: the host printed above is the address an app connects to. If you're going cell by cell, open the link above to see the project and its branch in Lakebase Postgres. (To find it yourself later, click the grid icon at the top right, then **Lakebase Postgres**.)
+# MAGIC Open **See it in Lakebase Postgres** above in another tab. You should see your project and its `production` branch. The host in the output is the address an app would connect to.
+# MAGIC
+# MAGIC Come back here to add the app's tables.
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ### Step 2: Create the app's tables and data on production
 # MAGIC
-# MAGIC We run migrations V1 and V2 (customers and orders), then load 1,000 customers and 5,000 orders. The migration tool records each version it runs in `app.schema_migrations`, and that's how it knows what to run next.
+# MAGIC A **migration** is a saved SQL change, like "create the orders table." V1 creates customers; V2 creates orders. The tables live in `app`, a Postgres **schema** that groups tables inside a database.
+# MAGIC
+# MAGIC The helper records each version in `app.schema_migrations`, so a rerun won't apply it twice. A real team uses a tool such as Flyway or Liquibase for this.
+# MAGIC
+# MAGIC This cell also loads test data. You should see **1,000 customers and 5,000 orders**.
 
 # COMMAND ----------
 
@@ -720,7 +773,9 @@ show(query(OLD_ID, "production",
 # MAGIC %md
 # MAGIC ### Step 3: Add a second database, `reporting`
 # MAGIC
-# MAGIC A branch can hold **more than one database**, all on the same compute. Our app keeps its stock levels in a second one, `reporting`. Keep it in mind for the move: `pg_dump` and `pg_restore` work on one database at a time.
+# MAGIC Our orders are in `databricks_postgres`, the database Lakebase created for us. Let's put stock levels in a second database, `reporting`, on the same branch.
+# MAGIC
+# MAGIC You should see **200 stock rows**. Later, each database needs its own dump and restore. Copying the orders database alone would leave the stock data behind.
 
 # COMMAND ----------
 
@@ -742,12 +797,14 @@ show(query(OLD_ID, "production", "SELECT count(*) AS stock_rows FROM app.stock",
 # MAGIC %md
 # MAGIC ### Step 4: Set up access on production
 # MAGIC
-# MAGIC Real apps don't let everyone own everything, so we create two Postgres roles:
+# MAGIC A reporting tool should be able to read orders without changing them. We'll use two Postgres **roles**, which are names we give permissions to:
 # MAGIC
 # MAGIC * `app_owner` owns the app's schemas and tables. Migrations run as this role.
 # MAGIC * `app_reader` can only read, like an analyst or a reporting tool.
 # MAGIC
-# MAGIC **Roles belong to the branch**, so we create them once. **Ownership and grants belong to each database**, so we set those up in both. We also set **default privileges**, so tables created later are readable too. None of this comes along with the data in a move, so we'll do it again on the new side.
+# MAGIC Create the roles once for the branch, then set ownership and read permissions in each database. **Default privileges** give future tables the same read access.
+# MAGIC
+# MAGIC In the output, every table should belong to `app_owner`, and `app_reader_can_read` should be `true`. We'll rebuild these permissions after the move.
 
 # COMMAND ----------
 
@@ -803,13 +860,15 @@ show(access_report(OLD_ID, "production", [DB, REPORTING_DB]))
 # MAGIC %md
 # MAGIC ### Step 5: Create a dev branch and do some unreleased work
 # MAGIC
-# MAGIC A **branch** is an instant copy of its parent, both databases included. It's copy-on-write, so nothing actually gets copied up front. On `development` we:
+# MAGIC A **branch** gives us a separate copy of production to work on, both databases included. It starts with what production has right now. Later changes stay on the branch where you make them.
+# MAGIC
+# MAGIC Lakebase shares the unchanged storage, so creating a branch doesn't copy every row up front. That's called copy-on-write. On `development` we:
 # MAGIC
 # MAGIC * run migrations V3 (coupons) and V4 (feature flags). V4 is **unreleased**, so production won't get it in this lab;
 # MAGIC * add a test coupon, `DEV-TEST-50`, and put it on three orders. Those are changes to tables production also has;
 # MAGIC * add two feature flags, in a table that exists **only** on this branch.
 # MAGIC
-# MAGIC Production doesn't see any of it. Branches are isolated both ways.
+# MAGIC Look at the two migration tables below: **development has V1 through V4; production still has only V1 and V2.** Our experiments haven't changed production.
 
 # COMMAND ----------
 
@@ -835,11 +894,11 @@ show(query(OLD_ID, "production",
 # MAGIC %md
 # MAGIC ### Step 6 (optional): Add a synced table fed from the lakehouse
 # MAGIC
-# MAGIC Lots of Lakebase apps read reference data that lives in the lakehouse. A **synced table** keeps a copy of a Delta table inside Lakebase. We create a small Delta table of products and sync it into old production.
+# MAGIC Suppose your product list already lives in the lakehouse. A **synced table** puts a read-only copy inside Lakebase so the app can read it alongside its orders.
 # MAGIC
-# MAGIC A synced table can't travel through `pg_dump`, so we'll recreate this one on the new side. The create call comes back **before** the rows land, so this cell waits for them.
+# MAGIC We'll create 50 products in a lakehouse table (a Delta table), then sync them into old production. If this exercise skips because of your catalog permissions, you can keep going.
 # MAGIC
-# MAGIC 📖 Learn more: [Synced tables](https://docs.databricks.com/aws/en/oltp/projects/sync-tables)
+# MAGIC The sync should reach **50 rows** and an **ONLINE** state. The create call returns before the rows arrive, so the cell waits for them. This table won't go in our dump; we'll recreate its sync on the new side.
 
 # COMMAND ----------
 
@@ -935,13 +994,11 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Module 2: Promote a change the everyday way
+# MAGIC ## Module 2: Release the coupon change
 # MAGIC
-# MAGIC Most releases are **promotions**, not moves. Dev's V3 (coupons) is ready, so we promote it the way CI would: **run the migration on production**. No data moves, so dev's test coupon stays on dev.
+# MAGIC **Run the tested V3 migration on production.** That's a promotion: release the coupon feature without copying development's rows.
 # MAGIC
-# MAGIC There's no merge button for branches. Promoting *is* running the same, already-tested migration on the next environment.
-# MAGIC
-# MAGIC After the release, production starts using a real coupon, `FALL10`.
+# MAGIC Production keeps its customers and orders and gets **`FALL10`**. Development should still have **`DEV-TEST-50`**, its test coupon.
 
 # COMMAND ----------
 
@@ -960,9 +1017,7 @@ show(query(OLD_ID, "development", "SELECT code, percent_off FROM app.coupons ORD
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Production got dev's schema change (V3), but not dev's test coupon: promotion moves schema, not data. And dev doesn't have `FALL10`. A branch is a copy as of the moment it was created, and it never picks up its parent's later changes.
-# MAGIC
-# MAGIC Because V3 ran as `app_owner`, the new `coupons` table is already readable by `app_reader`. That's the default privileges at work:
+# MAGIC Check access on the new table too. V3 ran as `app_owner`, so its default privileges should give `app_reader` read access to `coupons`.
 
 # COMMAND ----------
 
@@ -975,24 +1030,16 @@ show(access_report(OLD_ID, "production", [DB]))
 # MAGIC %md
 # MAGIC ## Module 3: Build the new home
 # MAGIC
-# MAGIC Now the bigger job: production has to **move** to a new home. In real life, that's because its workspace is going away, or it needs another cloud, region, or Postgres version. A move is five steps:
+# MAGIC Build an empty **new home** with a bundle. Both projects stay here on your first run; the second-workspace option uses the same steps.
 # MAGIC
-# MAGIC 1. Put it all in Git.
-# MAGIC 2. Deploy the bundle, and leave production un-migrated.
-# MAGIC 3. Restore production from a full dump, one database at a time.
-# MAGIC 4. Recreate the synced tables, and let them fill.
-# MAGIC 5. Recreate the child branches.
+# MAGIC ### Step 1: Describe the new home
 # MAGIC
-# MAGIC This module does steps 1 and 2, then tries the obvious shortcut. Module 4 does the rest, with a live app's extra steps around them: a write pause, rebuilding access, and a last check before the switch.
+# MAGIC The bundle file, `databricks.yml`, says what to create: a project, two branches, and development's compute. In a real release, you keep it in Git next to your migrations and app code. Here we write it to a temporary folder.
 # MAGIC
-# MAGIC ### Step 1: Put it all in Git
-# MAGIC
-# MAGIC The new home is described in a **bundle** file, `databricks.yml`. In a real move, it lives in Git next to your migrations and app code; here it goes in a temp folder. It declares the project, its two branches, and development's compute. Two settings worth knowing:
+# MAGIC The file below lists `production` and `development`. Two settings matter later:
 # MAGIC
 # MAGIC * `lifecycle: { prevent_destroy: true }` on the project and production, so a stray `bundle destroy` can't delete them. Module 7 shows it.
 # MAGIC * `history_retention_duration`, the restore window. It's a **setting**, so it doesn't come along with the data. You set it again on the new side.
-# MAGIC
-# MAGIC 📖 Learn more: [Bundle resources](https://docs.databricks.com/aws/en/dev-tools/bundles/resources) (Lakebase support in bundles is in Beta)
 
 # COMMAND ----------
 
@@ -1049,7 +1096,7 @@ print(write_bundle())
 # MAGIC
 # MAGIC `databricks bundle validate` checks the file, and `databricks bundle deploy` creates what it describes. Lakebase creates `production` along with the project, so the bundle **adopts** it (`replace_existing: true`) instead of failing.
 # MAGIC
-# MAGIC Notice the new production comes up **empty and un-migrated**. That's on purpose. Module 4's restore brings the data, the schema, and the migration history all at once. If the tables already existed, the restore would fail.
+# MAGIC The output should say **`Validation OK!`**, then show a successful deploy. In the next cell, **`has_app_tables` should be `false`**: the bundle creates resources, not app tables or rows. Leave production empty so the full restore can create them.
 
 # COMMAND ----------
 
@@ -1081,7 +1128,7 @@ show(query(NEW_ID, "production",
 # MAGIC %md
 # MAGIC ### The shortcut: branch the new home from the old production?
 # MAGIC
-# MAGIC Before we copy any data: can we just create a branch in the new project whose parent is old production? Let's try it.
+# MAGIC Branching was quick inside the old project. Could we do that here too, instead of dumping and restoring? Let's ask for a branch in the new project that starts from old production. **This request should be rejected.** The next cell prints the reason.
 
 # COMMAND ----------
 
@@ -1101,50 +1148,22 @@ except Exception as e:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **No.** A branch's parent has to be in the same project, even when both projects are in one workspace.
-# MAGIC
-# MAGIC ```
-# MAGIC Project                    owns its storage and history
-# MAGIC  └── Branch                an instant copy inside this project
-# MAGIC       ├── Compute          the connection host
-# MAGIC       └── Database         ordinary Postgres schemas and tables
-# MAGIC ```
-# MAGIC
-# MAGIC Nothing in the API moves or exports that branch. Rebuilding the new side is deliberate: the **bundle** creates its project, branches, and computes; the production dump supplies schema and data; access and synced tables are recreated; point-in-time history and snapshots stay behind.
-# MAGIC
-# MAGIC Most releases are simpler **promotions**: deploy the same definitions and run the same migrations, with no production data crossing over. A **move** is for relocating the environment or changing its Postgres major version. The bundle has rebuilt the empty new home; next, we copy production's data on purpose.
-# MAGIC
-# MAGIC 📖 [Branches](https://docs.databricks.com/aws/en/oltp/projects/branches) ·
-# MAGIC [pg_dump and pg_restore](https://docs.databricks.com/aws/en/oltp/projects/pg-dump-restore) ·
-# MAGIC [Bundle resources](https://docs.databricks.com/aws/en/dev-tools/bundles/resources)
+# MAGIC A branch's parent has to be in the same project. To get the orders into this one, use a dump and restore.
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Module 4: Move the data
 # MAGIC
-# MAGIC The new home has the same project and branches as the old one, but its production is empty. With a live app, this is the cutover: the move's last three steps, with a few extra ones around them, in this order:
-# MAGIC
-# MAGIC * Pause writes and take a watermark.
-# MAGIC * **Step 3:** dump and restore each database, then prove the copy matches.
-# MAGIC * **Step 4:** recreate the synced table (same name, one project at a time).
-# MAGIC * Rebuild access.
-# MAGIC * Run the last checks, then switch the app and resume writes.
-# MAGIC * **Step 5:** rebuild the child branches.
-# MAGIC
-# MAGIC Writes stay paused from the watermark to the switch. The child branches wait until after it, with the app live again.
+# MAGIC **Pause writes, copy, check, rebuild the sync and access, then switch.** Pointing the app at the new host is the **cutover**. Development can wait until the app is running again.
 # MAGIC
 # MAGIC ### The app is live: write, then pause (simulated)
 # MAGIC
-# MAGIC In real life, the app keeps writing to old production, so let's place a few new orders. Then we **pause writes** and take a **watermark**: the newest order ID and the row count. After the move, the new side has to match those numbers exactly.
+# MAGIC Place 25 more orders, then stop. Save a **watermark**, the newest order ID and total count, to check against after the copy. You should see **order 5025 and 5,025 orders**.
 # MAGIC
-# MAGIC Here the pause is simulated: our pretend app just stops placing orders. The cell then checks that no other session is running a statement or holding a transaction open, and stops the lab if one is.
+# MAGIC This pause is simulated. The cell stops placing orders and checks for other sessions running a statement or holding a transaction open. If it finds one, it refuses to continue.
 # MAGIC
-# MAGIC In a real cutover, you do the stopping. There's no live replication between projects, so anything written after the dump is lost:
-# MAGIC
-# MAGIC 1. **Stop every writer:** the app, jobs and schedules, scripts, and any app on a child branch.
-# MAGIC 2. **Keep them stopped.** For example, take write access away from the app's role (`REVOKE INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA app FROM <app role>`) or end its sessions with `pg_terminate_backend`. We haven't tested these in the lab.
-# MAGIC 3. **Check** that no session is running a statement or holding a transaction open (this cell's check), and that the watermark doesn't move for a minute. Then take the watermark.
+# MAGIC For a real app, this check doesn't stop future writes. Use the repo's <a href="$./skills/lakebase-move-lab-expert/playbook.md">production playbook</a> to stop and keep every writer stopped before dumping.
 
 # COMMAND ----------
 
@@ -1173,7 +1192,7 @@ print("No other session is running a statement or holding a transaction open.")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Step 3: Restore production from a full dump, one database at a time
+# MAGIC ### Copy both production databases
 # MAGIC
 # MAGIC **First, list the databases.** Old production has more than one, so each gets its own dump and its own restore. (The built-in `postgres` database is empty, so we skip it.)
 
@@ -1189,7 +1208,7 @@ print("Databases to move:", ", ".join(APP_DATABASES))
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **Dump each database.** We use the custom format (`-Fc`) so `pg_restore` can list and filter what's inside. In `databricks_postgres` we **exclude** the synced table, and Step 4 recreates it instead.
+# MAGIC **Dump each database.** We use the custom format (`-Fc`) so `pg_restore` can list and filter what's inside. In `databricks_postgres` we **exclude** the synced table. We'll recreate its sync after the restore.
 # MAGIC
 # MAGIC If the `--exclude-table` name has a typo, `pg_dump` doesn't complain, and the synced table quietly stays in the dump. So the cell checks that it's gone.
 
@@ -1215,7 +1234,9 @@ assert left_in_dumps == 0, "The synced table is still in the dump. Check the --e
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **Filter out Lakebase's own entries.** A Lakebase dump includes a few of Lakebase's own platform objects, and restoring those into another project fails. So we list what's in each dump with `pg_restore -l` and comment out (`;`) those lines. It's the same filter the deck uses.
+# MAGIC **Leave Lakebase's own objects alone.** The dump includes some objects Lakebase manages, and the new project already has its own versions. Trying to restore those causes errors.
+# MAGIC
+# MAGIC `pg_restore -l` lists what's in the dump. This cell puts a `;` in front of the platform entries so the restore skips them. The app's entries stay in the list. For a real move, inspect your own dump's list before using this filter.
 
 # COMMAND ----------
 
@@ -1250,13 +1271,13 @@ show(query(NEW_ID, "production", "SELECT datname AS database FROM pg_database WH
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **Restore each database into new production.** The flags matter:
+# MAGIC **Restore each database into new production.** Each database should finish with **exit code 0**, meaning the command succeeded. Here's what the options do:
 # MAGIC
 # MAGIC * `--no-owner --no-acl`: skip the old side's owners and grants, because those roles don't exist here. We rebuild access in a later step.
 # MAGIC * `--single-transaction --exit-on-error`: all or nothing. If anything fails, nothing lands, and you can safely try again.
 # MAGIC * `-L`: restore only what's in that database's filtered list.
 # MAGIC
-# MAGIC The plain `pg_restore` from the docs copied every row in our tests, but still ended in errors. These flags and the filter fix that. The cell also notes the time right before the first restore, for Module 5.
+# MAGIC Rows appearing isn't enough: a nonzero exit is a failure. The cell also saves the time before the first restore for Module 5.
 
 # COMMAND ----------
 
@@ -1284,7 +1305,11 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **Prove the copy matches.** In every database, we compare the app schema's definitions (tables, columns, keys, indexes, constraints, and sequences, from a schema-only dump of each side), then every app table's fingerprint (its row count and a checksum of all its rows), then the watermark and the migration history. Everything should match. (Access, history, and synced tables aren't in this check, because they don't come along: that's the next few steps.)
+# MAGIC **Check the copy, database by database.** First we compare each database's app schema: its tables, columns, keys, indexes, constraints, and sequences. A **sequence** is a counter Postgres uses to give a new row its ID, like the next order number.
+# MAGIC
+# MAGIC Then we compare every app table's row count and **checksum**, a value calculated from all its rows. Matching checksums help us check the contents, not just how many rows there are.
+# MAGIC
+# MAGIC Every table should show **`identical = true`**, the watermark should match, and migrations should be **`[1, 2, 3]`**. This comparison covers the app's schema and rows. Access, project history, and synced tables need their own checks.
 
 # COMMAND ----------
 
@@ -1326,11 +1351,11 @@ print("✅ New production matches old production: the same app schema and the sa
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Step 4 (optional): Recreate the synced table on new production
+# MAGIC ### Recreate the synced table (optional)
 # MAGIC
-# MAGIC The synced table refills from the lakehouse table, which already exists here. A synced table's name can point at only one project at a time, so we delete the old sync during the write pause, then create the new one with the same name. The app keeps seeing the same table.
+# MAGIC The product list comes from the Delta table, not from our dump. We'll remove the old sync and create a new one with the same name, pointing at new production. In this workspace, that name can only point at one project at a time.
 # MAGIC
-# MAGIC Then we wait for the rows and prove the table is current: the Delta version it last synced should match the newest version in the Delta table's history.
+# MAGIC The new sync should have **50 rows** and matching Delta versions. That tells us it has caught up. With a second workspace that has its own metastore (the catalog of lakehouse tables), this step skips: we'd need to copy its source table there first.
 
 # COMMAND ----------
 
@@ -1362,7 +1387,7 @@ else:
 # MAGIC %md
 # MAGIC ### Set up access before the switch
 # MAGIC
-# MAGIC We restored with `--no-owner --no-acl`, so the new side has **none** of the old access rules. The roles don't even exist, and every table, in both databases, belongs to whoever ran the restore. Let's look:
+# MAGIC `--no-owner --no-acl` left out the old app's access rules. Every restored table belongs to whoever ran the restore, and `app_reader` doesn't exist here yet. Check it before rebuilding access.
 
 # COMMAND ----------
 
@@ -1379,7 +1404,7 @@ show(pd.concat([query(NEW_ID, "production", OWNERS_SQL, dbname=db).assign(databa
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC So we rebuild it: the same roles, once for the branch, then the same ownership, grants, and default privileges in each database. We do it on production **before** rebuilding the child branches, so they get it too. Passwords never come across, so password-based roles need new ones.
+# MAGIC Recreate the roles once for the branch, then ownership, grants, and default privileges in each database. Do this on production before rebuilding development, so it inherits the access rules.
 
 # COMMAND ----------
 
@@ -1393,7 +1418,9 @@ show(access_report(NEW_ID, "production", APP_DATABASES))
 # MAGIC %md
 # MAGIC ### Last checklist before you switch
 # MAGIC
-# MAGIC Don't switch until these pass. Once the first write lands on the new side, going back means a reverse move, so this is your last easy exit.
+# MAGIC You need **7 of 7 checks passed** before switching. The checks cover both databases, the order watermark, access, the sync if we used it, and a test order that rolls back.
+# MAGIC
+# MAGIC Don't switch if a check fails. Before the first new write, the old side still has everything. After new writes land, pointing back would leave those orders behind.
 
 # COMMAND ----------
 
@@ -1437,9 +1464,9 @@ print("All checks passed. Safe to switch.")
 # MAGIC %md
 # MAGIC ### Switch the app and resume writes
 # MAGIC
-# MAGIC For a real app, switching means changing its connection settings. The **host** changes, and for an app that signs in with OAuth, so do the workspace and the endpoint it gets tokens from. Then writes resume on the new side.
+# MAGIC Point the simulated app at the new host and place five orders. They should be **5026 through 5030** because the dump carried the order-ID counter too.
 # MAGIC
-# MAGIC Watch the order IDs: they pick up right after the watermark, because the dump carried the sequence values. The cell also tells you how long writes were paused, for this tiny database; a real one takes as long as its dump and restore.
+# MAGIC The cell prints the simulated write pause for this tiny database. It's not an estimate for your app. A real pause includes the dump, restore, checks, and rebuilding the sync and access.
 
 # COMMAND ----------
 
@@ -1467,11 +1494,9 @@ print("That's for this tiny lab database. Yours depends on your data, so time a 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Step 5: Rebuild the child branches
+# MAGIC ### Rebuild development
 # MAGIC
-# MAGIC The app only talks to production, so this can happen after the switch, with the app already live.
-# MAGIC
-# MAGIC One problem: the bundle created the new `development` branch back in Module 3, **before** the restore, when production was empty. Remember Module 2: a branch never picks up its parent's later changes. So what's in it?
+# MAGIC The bundle created `development` before the restore, when new production was empty. Check whether it has any app tables.
 
 # COMMAND ----------
 
@@ -1482,7 +1507,7 @@ show(query(NEW_ID, "development", "SELECT to_regclass('app.orders') IS NOT NULL 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **Nothing.** It's still a copy of the empty production. The fix is "delete, redeploy, then migrate": delete the branch, then run `bundle deploy` again. The bundle sees `development` is missing and creates it, this time from the restored production. So it gets everything at once: both databases, the data, the schema, and the access rules we just set up.
+# MAGIC Delete that empty branch and run `bundle deploy` again. The replacement starts from production as it is now, with both databases and their access rules.
 # MAGIC
 # MAGIC Only do this with brand-new branches on the new side. Deleting a branch deletes whatever is on it.
 
@@ -1504,12 +1529,11 @@ show(query(NEW_ID, "development", "SELECT count(*) AS stock_rows FROM app.stock"
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC The rebuilt branch matches **today's** production, so it doesn't have dev's own work yet. We bring that back in two parts:
+# MAGIC The rebuilt branch starts from production after the switch. It has `FALL10` and the new orders, but not the dev-only work. We'll add that back:
 # MAGIC
-# MAGIC 1. **Schema:** replay dev's unreleased migration, V4, with the migration tool.
-# MAGIC 2. **Data:**
-# MAGIC    * Tables that exist **only** on dev, like `feature_flags`, come across with a **data-only** dump of just those tables.
-# MAGIC    * Changes dev made to tables production also has, like the `DEV-TEST-50` coupon and the three orders that use it, get **reconciled** on purpose.
+# MAGIC 1. Run the unreleased migration, **V4**, to create `feature_flags`.
+# MAGIC 2. Copy the two feature flags with a **data-only** dump of just that dev-only table.
+# MAGIC 3. For tables production also has, apply **just dev's changes**: the `DEV-TEST-50` coupon and the three orders that use it. That's what we mean by reconciling the data.
 # MAGIC
 # MAGIC Why not just dump all of dev, data only? That dump includes production's rows too, so it collides with the rows the rebuilt branch already has. The optional cell after this one shows it failing.
 
@@ -1556,8 +1580,6 @@ show(query(NEW_ID, "development",
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Now development has dev's own work **plus** today's production data, including `FALL10` and the orders placed after the switch. That's usually what you want for a dev branch.
-# MAGIC
 # MAGIC **Optional:** watch the "just dump all of dev" shortcut fail. Thanks to `--single-transaction`, nothing changes when it does.
 
 # COMMAND ----------
@@ -1581,14 +1603,11 @@ print("New development still has", query(NEW_ID, "development", "SELECT count(*)
 # MAGIC %md
 # MAGIC ## Module 5: What doesn't come along
 # MAGIC
-# MAGIC A move carries **just the data**. Each project keeps its own point-in-time history and its own snapshots, and you can't use them from another project.
+# MAGIC If you need to recover an order from before the move, use the old project's history. It wasn't in the dump.
 # MAGIC
-# MAGIC ### Point-in-time history starts over
+# MAGIC ### The new home has its own history
 # MAGIC
-# MAGIC Let's ask the new home for production as it was **just before the restore**:
-# MAGIC
-# MAGIC 📖 Learn more: [Point-in-time restore](https://docs.databricks.com/aws/en/oltp/projects/point-in-time-restore) ·
-# MAGIC [Snapshots](https://docs.databricks.com/aws/en/oltp/projects/snapshots)
+# MAGIC **Point-in-time restore** lets you create a branch from an earlier moment. Let's ask the new home for production as it was **just before the restore**. It should have **`has_app_tables = false`**: this project hadn't received our app yet.
 
 # COMMAND ----------
 
@@ -1616,8 +1635,6 @@ finally:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **Empty.** The new project's history only goes back to the move. Anything older lives in the **old** project's history, and only for its restore window (7 days by default, up to 30). So keep the old project around for at least one restore window after you switch.
-# MAGIC
 # MAGIC ### Snapshots stay behind too
 # MAGIC
 # MAGIC A snapshot is a saved copy of a branch that you can restore later. Let's take one on old production and try to restore it in the new home.
@@ -1668,67 +1685,29 @@ except Exception as e:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Same as branches: a snapshot can only be restored inside its own project. On the new side, set the restore window and a snapshot schedule again. They're settings, not data. (The bundle already set the restore window.)
-# MAGIC
-# MAGIC ### What you did
-# MAGIC
-# MAGIC * Promoted a change with a migration, and no data crossed over.
-# MAGIC * Built the new home with `databricks bundle deploy`, and saw why a branch can't just move.
-# MAGIC * Moved production with one `pg_dump` and one filtered `pg_restore` per database, and proved the app schema and every app table match.
-# MAGIC * Recreated the synced table on the new side instead of copying it (unless the lab skipped it for your catalog).
-# MAGIC * Rebuilt access: roles once per branch, ownership and grants in each database.
-# MAGIC * Passed the last checklist, switched the app, and resumed writes.
-# MAGIC * Rebuilt the dev branch with "delete, redeploy", then brought back its own work: a migration, a dev-only table, and its changed rows.
-# MAGIC * Saw that point-in-time history and snapshots stay with the old project.
+# MAGIC A snapshot can only be restored inside its own project. Keep the old project for pre-move recovery, and set a snapshot schedule on the new one. The bundle already set its restore window.
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Module 6: Doing it for real
 # MAGIC
-# MAGIC This lab moved one small environment in a few minutes. Here's the same job as a checklist for a real one, plus what to add around the steps you just ran.
-# MAGIC
-# MAGIC **Before the day**
-# MAGIC
-# MAGIC * **Decide what data has to move,** per project, then per branch and database. Usually it's only production's. Dev and test data stay behind, and child branches get rebuilt from the new production.
-# MAGIC * **Put it all in Git:** the bundle (with `lifecycle.prevent_destroy` on the project and production), the migrations, and the app's settings.
-# MAGIC * **List every database** on each branch you're moving. Each one gets its own dump and restore, and any database besides `databricks_postgres` needs a `CREATE DATABASE` on the new side first.
-# MAGIC * **Map identities.** Workspaces in one account can share users and service principals; another account means new ones. Either way, recreate their Postgres roles in the new project. Password roles get new passwords, and OAuth apps need the new workspace and endpoint.
-# MAGIC * **Check synced tables.** Their source tables have to exist on the new side. If both workspaces share a metastore, plan to remove the old sync during the pause, like this lab did.
-# MAGIC * **Check versions.** The `pg_dump` client has to be the same version as the source's Postgres, or newer. Need a newer major version? Create the new project on it. Lakebase doesn't upgrade a project's major version in place.
-# MAGIC * **Get sign-off before you pause.** Waiting on an approval during the pause just makes the pause longer.
-# MAGIC
-# MAGIC **On the day**
-# MAGIC
-# MAGIC 1. **Stop every writer, and keep them stopped:** the app, jobs, scripts, and any app on a child branch (for example, take write access away from the app's role). Check that no session is running a statement or holding a transaction open, then take a watermark.
-# MAGIC 2. **Dump and restore each database:** filter out Lakebase's platform entries, and restore with `--no-owner --no-acl --single-transaction --exit-on-error`.
-# MAGIC 3. **Check it:** the schema, row counts and checksums, the watermark, sequences, and migration history.
-# MAGIC 4. **Recreate synced tables** and let them fill.
-# MAGIC 5. **Rebuild access:** roles, ownership, grants, and default privileges.
-# MAGIC 6. **Run the last checklist, switch the app, and resume writes.** Before the first new write, going back is just pointing the app back, after recreating any old sync you removed during the pause. After it, going back is a reverse move.
-# MAGIC 7. **Rebuild the child branches** from the new production (delete, redeploy), then bring back each one's own work.
-# MAGIC
-# MAGIC **After**
-# MAGIC
-# MAGIC * **Keep the old project for at least one restore window** (7 days by default, up to 30). Its point-in-time history and snapshots are your only way back to before the move.
-# MAGIC * **Set the restore window and the snapshot schedule** on the new project. They're settings, so they don't come along.
-# MAGIC
-# MAGIC 📖 Learn more: [pg_dump and pg_restore](https://docs.databricks.com/aws/en/oltp/projects/pg-dump-restore) ·
-# MAGIC [Postgres version support](https://docs.databricks.com/aws/en/oltp/projects/postgres-version-support) ·
-# MAGIC [Manage projects](https://docs.databricks.com/aws/en/oltp/projects/manage-projects)
+# MAGIC Before moving a real app, use the repo's <a href="$./skills/lakebase-move-lab-expert/playbook.md">production playbook</a>. The <a href="$./TESTING.md">test record</a> lists what ran here and what hasn't been tested. If you imported only this notebook, open those files in the GitHub repo.
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Module 7: Clean up
 # MAGIC
-# MAGIC Lakebase bills for compute (close to zero when idle) and for storage, so let's delete what the lab created. The new home came from a bundle, so we tear it down the bundle way, and that gives us one last lesson.
+# MAGIC Run these two cells to delete the lab resources, including anything from a stopped run.
 # MAGIC
-# MAGIC These two cells are also the way out of a run that stopped partway. They delete whatever the lab made and skip anything that isn't there. They only delete projects with the lab's name tag ("Lakebase move lab: ..."), so nothing else gets touched. If the notebook has restarted or detached since the run, first run the cells from the top through Module 0.
+# MAGIC **This deletes the made-up app data too.** For a real move, keep the old project for recovery.
+# MAGIC
+# MAGIC If Python restarted or the notebook detached, first run from the top through **Module 0 only**, skip Modules 1 through 6, then run these cells. Cleanup skips missing resources and only deletes projects with the lab's name tag ("Lakebase move lab: ...").
 # MAGIC
 # MAGIC ### Step 1: Try to destroy the new home
 # MAGIC
-# MAGIC Remember `prevent_destroy` in the bundle file? Let's run `databricks bundle destroy` with it still there.
+# MAGIC Try `databricks bundle destroy` with `prevent_destroy` still in the bundle file.
 
 # COMMAND ----------
 
@@ -1746,13 +1725,15 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **Refused.** That's the guard doing its job: nobody deletes production with a stray command. To really delete it, someone has to take the guard out of the file first. In real life, that's a change someone reviews in Git.
+# MAGIC **Refused.** With `prevent_destroy` in the bundle, this `bundle destroy` can't delete production. To delete it through the bundle, someone has to take the guard out of the file first. In a real release, that's a change someone reviews in Git.
 # MAGIC
 # MAGIC ### Step 2: Remove the guard and delete everything
 # MAGIC
-# MAGIC This cell takes `prevent_destroy` out of the bundle file, redeploys, and runs `bundle destroy` for real. Because of `purge_on_delete`, the project is gone right away and its name is free for your next run. Then it deletes what the bundle never owned: the old home, the synced table, the Unity Catalog schema, and the local files. If you pointed the new home at another workspace, it also deletes that secret scope. Revoke the token there if you're done.
+# MAGIC Remove `prevent_destroy`, redeploy, then destroy. `purge_on_delete` frees the project's name for your next run. This also removes the old home, synced table, Unity Catalog schema, and local files. In two-workspace mode it deletes the secret scope too; revoke the token in the other workspace when you're done.
 # MAGIC
-# MAGIC `CONFIRM_TEARDOWN` is `True` in this cell, so **Run all** ends by deleting everything. To keep the projects and look around, change it to `False` **in this cell**, then run the cell. If you stopped earlier, open the project link now: Run all will delete it. If you stop at a checkpoint, you still need Module 7.
+# MAGIC `CONFIRM_TEARDOWN` is `True`, so **Run all** deletes the lab resources. To keep them briefly and look around, change it to `False` **in this cell**. When you're done, set it back to `True` and run the cell to clean up.
+# MAGIC
+# MAGIC The cell should finish with **`Done.`**. Your notebook and Git folder stay.
 
 # COMMAND ----------
 
@@ -1807,6 +1788,8 @@ else:
             print("Couldn't drop the lab schema:", str(e)[:120])
     try:
         w_new.workspace.delete(BUNDLE_ROOT, recursive=True)  # only this lab's bundle folder
+    except NotFound:
+        print("No bundle folder to delete")
     except Exception as e:
         print(f"Couldn't delete the bundle folder {BUNDLE_ROOT}: {type(e).__name__}: {str(e)[:160]}")
     if NEW_WORKSPACE_SECRETS:

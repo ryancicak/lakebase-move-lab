@@ -10,18 +10,14 @@ SPDX-License-Identifier: Apache-2.0
 
 # Lakebase Move Lab preflight
 
-The Lakebase Move Lab is a notebook that promotes and moves a Lakebase environment between projects, optionally into a second workspace. Its preflight notebook, `lakebase_move_lab_preflight`, tries everything the lab needs (downloads, sign-in, a bundle deploy, Postgres connections, a second database, roles and grants, `pg_dump` and `pg_restore`, branches, snapshots, a synced table, and, if set, the second workspace) on a throwaway project, deletes it, and reports each check as ✅ pass, ⚠️ warning, ❌ fail, or ⏭️ skipped, with a fix.
-
-This skill runs that notebook as a one-time serverless job and explains the results.
+Use `lakebase_move_lab_preflight` to check readiness, then explain its actual results. It creates and deletes throwaway projects, including one in the other workspace if selected. Don't claim readiness without its Summary or returned report.
 
 ## Steps
 
-1. Tell the user in one or two sentences what will happen. Prefer: if `lakebase_move_lab_preflight` is already in their Git folder, they should attach serverless and click Run all. Only if they agree to a job, and the notebook is not already open, use the submit cell below: a one-time serverless job that takes about 3 minutes and uses one throwaway Lakebase project, named `lb-move-pre-...`, which it deletes at the end. If the user named a catalog for the lab, use it; otherwise use `main`. If they'll put the lab's new home in another workspace, use that workspace's URL; otherwise leave it empty. (For another workspace, the token has to be stored already: the lab's or the preflight's first cell, **Choose your setup**, asks for it in a hidden box. If the sign-in check fails, tell them to run that cell once.)
+1. If the notebook is already in their Git folder, have them attach Serverless and click Run all. Use the job cell only if they agree and the notebook isn't already open. Tell them it takes about 3 minutes and deletes its throwaway projects. Use their lab catalog, or `main` if none was named. Use the other workspace's URL only if the new home goes there. A job can't answer the hidden token prompt; have them run **Choose your setup** interactively first if credentials aren't stored.
 2. If you use the job cell, add ONE Python cell with exactly the code in "The cell" below, changing only `CATALOG` and `OTHER_WORKSPACE_URL`, and run it. Don't split, shorten, or rewrite it. It waits for the job to finish, so it runs for a few minutes.
-3. When they already have Summary or job output, skip to explaining it. First line: the verdict, one of ✅ Ready, ⚠️ Ready with notes, or ❌ Not ready.
-   - Then a short table of every check that isn't ✅: the check, what it means for the lab, and the fix. Use the fix from the output; the troubleshooting table below adds context.
-   - Then the job run link from the output, for the full details.
-4. If leftovers failed, do not resubmit the job cell. Open `lakebase_move_lab_preflight`, set `CLEAN_LEFTOVERS = True` in Settings, re-run that settings cell, then leftovers, or click Run all; or run the lab’s Module 7. Don't change workspace settings or permissions yourself.
+3. If they already have output, don't run anything. Lead with its verdict: ✅ Ready, ⚠️ Ready with notes, or ❌ Not ready. Show a short table of non-passing checks, their consequences, and the fixes from the output. Include the job run link if present. Match errors in [troubleshooting](../lakebase-move-lab-expert/troubleshooting.md#the-preflight-and-its-genie-code-cell).
+4. If leftovers failed, don't resubmit the same job. Follow [preflight results](../lakebase-move-lab-expert/lab-walkthrough.md#preflight-results). Don't change workspace settings or permissions yourself.
 
 ## The cell
 
@@ -80,35 +76,6 @@ else:
            "not ready": "\n❌ Not ready: fix the items marked ❌, then run this check again."}[report["verdict"]])
 ```
 
-## Troubleshooting
-
-| Check | What a problem means for the lab | Fix |
-|---|---|---|
-| Serverless compute (warning) | The lab was tested on serverless only | Attach serverless compute |
-| Python packages (PyPI) | The lab's install cell fails | Allow serverless compute to reach PyPI, or a PyPI mirror |
-| PostgreSQL client tools (apt.postgresql.org) | No `pg_dump` or `pg_restore`, so no move | Allow serverless compute to reach apt.postgresql.org over HTTPS |
-| psycopg on the downloaded libpq | The lab can't connect to Postgres | Send the error to the lab's owner |
-| Databricks SDK and the Lakebase API | Nothing in the lab works | Lakebase must be available in the workspace's region, with permission to use it |
-| Databricks CLI (github.com) | No bundle steps | Allow serverless compute to reach github.com over HTTPS |
-| CLI signs in as you | No bundle steps | Send the error to the lab's owner |
-| No leftovers from an earlier lab run | The lab trips over old projects instead of starting clean | Do not resubmit the job cell. Open the preflight notebook, set `CLEAN_LEFTOVERS = True` in Settings, re-run that cell, then leftovers, or Run all. Or run the lab's Module 7 (do not click Run all on the lab; that hits the leftover error again) |
-| Bundle deploys a Lakebase project | The lab can't build its new home | Permission to create Lakebase projects, and a writable home folder (bundles keep state in `~/.bundle`) |
-| Connect with a login token | No Postgres access | A timeout points at the serverless network policy; anything else goes to the lab's owner |
-| Create a second database, Roles, ownership, and grants, pg_dump and a filtered pg_restore, Child branch and its compute, Point-in-time branch | That step of the lab fails | Send the error to the lab's owner |
-| Snapshots (warning) | The lab skips its snapshot demo | Nothing to do |
-| Schema and Delta table in the catalog (warning) | The lab skips its synced-table steps | Pick a catalog where the user can create schemas and put it in box 3 of the lab's **Choose your setup** (its first code cell), or ask for `CREATE SCHEMA` on the catalog |
-| Synced table into Lakebase (warning) | The lab skips its synced-table steps | Read the error in the detail |
-| prevent_destroy guards the bundle, Cleanup | The lab's cleanup may not work | Delete what the detail lists, and send it to the lab's owner |
-| Second workspace: sign-in | The lab can't use the second workspace | No token stored yet, or it doesn't work there. Have the user open the lab (or the preflight notebook) and run its first cell, **Choose your setup**, with **Another workspace** and the URL: it asks for a token in a hidden box. Then run this check again |
-| Second workspace: no leftovers from an earlier lab run | The lab trips over an old new-home project there | Do not resubmit the job cell. Open the preflight notebook, set `CLEAN_LEFTOVERS = True` in Settings, re-run that cell, then leftovers, or Run all. Or run the lab's Module 7 (do not click Run all on the lab) |
-| Second workspace: bundle deploys a Lakebase project | The lab can't build its new home there | Permission to create Lakebase projects in that workspace, and a writable home folder there |
-| Second workspace: connect from here | No Postgres access to the new home | The detail says which route worked: the normal one, or the compute's public address (found in dns.google or cloudflare-dns.com) after the normal route was refused. A timeout points at the serverless network policy |
-| Second workspace: restore a dump from this workspace | The move itself fails across workspaces | Send the error to the lab's owner |
-| Second workspace: synced tables (warning) | The other workspace has its own metastore, so the lab skips the synced table on the new side | Nothing to do for the lab; in a real move, copy the source Delta table over first |
-
-⏭️ skipped means a check it depends on failed; fix that one first.
-
 ## If the cell itself fails
 
-- Permission denied on `runs/submit`, or serverless jobs aren't enabled: ask the user to open the `lakebase_move_lab_preflight` notebook (from the lab's Git folder, or import it from the repo) and click Run all. Its **Summary** cell shows the same results.
-- The job can't reach GitHub as a Git source: import `lakebase_move_lab_preflight.py` from the repo into the same folder as the current notebook, then run the cell again. It uses a copy next to the notebook first.
+Use the [preflight error reference](../lakebase-move-lab-expert/troubleshooting.md#the-preflight-and-its-genie-code-cell). If the job returns no report, say it stopped; don't turn the job's status into a readiness verdict.

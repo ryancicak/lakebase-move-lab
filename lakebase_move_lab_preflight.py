@@ -7,25 +7,13 @@
 # MAGIC <!-- Copyright 2026 Databricks, Inc. SPDX-License-Identifier: Apache-2.0 -->
 # MAGIC # Lakebase Move Lab: preflight check
 # MAGIC
-# MAGIC Run this **optional** check before a workshop or in a restricted workspace. A solo learner on a normal workspace can skip it and start with `lakebase_move_lab`. In about 3 minutes, it tries everything the lab needs, the same way the lab does it, and tells you exactly what to fix.
+# MAGIC Run this before a workshop, or if permissions or network access block the lab. It tries the lab's tools and database operations on throwaway projects, then deletes them. For your own first run, you can start with `lakebase_move_lab` instead.
 # MAGIC
-# MAGIC It checks:
-# MAGIC
-# MAGIC * **Downloads:** the Python packages from PyPI, the PostgreSQL client tools from apt.postgresql.org, and the Databricks CLI from GitHub.
-# MAGIC * **Sign-in:** the SDK and the CLI both sign in as you, with nothing to configure.
-# MAGIC * **Lakebase:** a bundle deploys a project, and you can connect, create a second database, set up roles and grants, run `pg_dump` and a filtered `pg_restore`, and create point-in-time branches and snapshots.
-# MAGIC * **Synced tables:** you can create a schema in the lab's catalog and sync a Delta table into Lakebase.
-# MAGIC * **Cleanup:** `prevent_destroy` guards the bundle, and everything this check creates gets deleted.
-# MAGIC * **Leftovers:** nothing from an earlier lab run is still around.
-# MAGIC * **A second workspace (optional):** skip this unless you'll put the lab's new home in another workspace.
-# MAGIC
-# MAGIC It creates one small throwaway project, `lb-move-pre-…`, and deletes it at the end. Run it the way you'll run the lab: on serverless, as yourself. The **Summary** cell at the end gives you the verdict: ✅ ready, ⚠️ ready with notes, or ❌ fix these first.
-# MAGIC
-# MAGIC > You can also ask **Genie Code** to run this check and explain the results. The repo's README shows how.
+# MAGIC Run it on **Serverless**, as yourself, before starting the lab. Don't run both at once under the same identity: the lab's active projects would look like leftovers. At the end, open **Summary** for the verdict and any fixes.
 # MAGIC
 # MAGIC ### Choose your setup
 # MAGIC
-# MAGIC Run the next cell. Leave the boxes at the defaults to keep both homes in this workspace, then click **Run all**. Pick **Another workspace** only if you have a second one and want to check that path too.
+# MAGIC Run the next cell, leave the three boxes at their defaults, then click **Run all**. Use the same answers here as in the lab. For another workspace, put its URL in box 2 first, then choose **Another workspace** in box 1 and answer the hidden token prompt below the cell.
 
 # COMMAND ----------
 
@@ -37,6 +25,7 @@ The token is asked for in a hidden box. It's never shown, and it's never saved i
 """
 import getpass
 import re
+from urllib.parse import urlsplit
 
 from databricks.sdk import WorkspaceClient
 
@@ -51,13 +40,29 @@ slug = re.sub(r"[^a-z0-9]+", "-", me.user_name.split("@")[0].lower()).strip("-")
 scope = f"lb-move-lab-{slug}-{me.id}"  # your user id keeps it yours, even when user names start alike
 
 
+def workspace_url(value):
+    """Use the workspace's HTTPS host, even when someone pastes a link to a page inside it."""
+    parsed = urlsplit(value if "://" in value else "https://" + value)
+    host = parsed.hostname or ""
+    if (parsed.scheme != "https" or parsed.username or parsed.password or parsed.port
+            or host.startswith("accounts.")
+            or not host.endswith((".cloud.databricks.com", ".azuredatabricks.net", ".gcp.databricks.com"))):
+        raise ValueError("Use your Databricks workspace URL, starting with https://. "
+                         "Don't use an account-console address or a link to another site.")
+    return f"https://{host}"
+
+
 def ask_for_token(prompt):
     """A hidden box for the token. A job can't answer it, so then it says how to store the token instead."""
     try:
-        return getpass.getpass(prompt).strip()
+        token = getpass.getpass(prompt).strip()
     except Exception:
         raise RuntimeError("No working token for the other workspace yet. Run this cell yourself once, or store "
                            f"one with the Databricks CLI: databricks secrets put-secret {scope} token") from None
+    if not token:
+        raise ValueError("The token box was empty. Copy a personal access token from the other workspace, "
+                         "then run this cell again and paste it into the hidden box.")
+    return token
 
 
 def signed_in_as():
@@ -77,11 +82,15 @@ if dbutils.widgets.get("where") == OTHER:
         url = dbutils.widgets.get("other_url").strip().rstrip("/")
         if not url:
             raise ValueError("You picked another workspace. Put its URL in box 2 at the top, then run this cell again.")
-        url = "https://" + url.split("://")[-1]
+        url = workspace_url(url)
         if scope not in {s.name for s in w.secrets.list_scopes()}:
             w.secrets.create_scope(scope=scope)
-        w.secrets.put_secret(scope=scope, key="host", string_value=url)
         stored = {s.key for s in w.secrets.list_secrets(scope=scope)}
+        if "host" in stored and workspace_url(dbutils.secrets.get(scope, "host")) != url:
+            raise RuntimeError("This secret scope already points to a different workspace. Clean up the earlier lab "
+                               "with its original settings in Module 7 first. If you only ran preflight, delete the "
+                               f"scope: databricks secrets delete-scope {scope}")
+        w.secrets.put_secret(scope=scope, key="host", string_value=url)
         if not stored & {"token", "client-id"}:
             w.secrets.put_secret(scope=scope, key="token", string_value=ask_for_token(
                 "Paste a personal access token from the other workspace (it stays hidden): "))
@@ -108,7 +117,9 @@ print("\nChange a box at the top and run this cell again, or click Run all.")
 # MAGIC %md
 # MAGIC ### Install the Python libraries
 # MAGIC
-# MAGIC Same install as the lab's. The orange **Core Python package version(s) changed** box it shows is expected, because it upgrades the Databricks SDK that serverless comes with, and the next cell restarts Python. If this fails, the lab's will too, and that usually means serverless can't reach PyPI. Ask your workspace admin to allow PyPI, or a PyPI mirror, for serverless compute.
+# MAGIC This is the same install as the lab. Expect the orange **Core Python package version(s) changed** box: we're upgrading the Databricks SDK that serverless comes with. The next cell restarts Python.
+# MAGIC
+# MAGIC If the install fails, the lab's will too. Usually that means serverless can't reach PyPI. Ask your workspace admin to allow PyPI, or a PyPI mirror, for serverless compute.
 
 # COMMAND ----------
 
@@ -148,6 +159,7 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pandas as pd
 
@@ -230,7 +242,7 @@ print("Where the new home goes:", "another workspace" if SECOND_WORKSPACE else "
 # MAGIC %md
 # MAGIC ### Compute, downloads, and sign-in
 # MAGIC
-# MAGIC The lab downloads the PostgreSQL client tools and the Databricks CLI, loads psycopg on the downloaded `libpq`, and signs in to Databricks two ways: with the SDK and with the CLI. This cell does all of that, exactly the way the lab does.
+# MAGIC Can serverless download the tools and sign in as you? This cell uses the same PostgreSQL tools and Databricks CLI as the lab. It loads psycopg on the downloaded `libpq`, then checks sign-in with both the SDK and the CLI.
 
 # COMMAND ----------
 
@@ -306,7 +318,7 @@ def _():
                                     text=True, check=True).stdout.strip() for tool in ("pg_dump", "pg_restore"))
 
 
-@check("psycopg on the downloaded libpq", "This is how the lab loads psycopg. Send the error to the lab's owner.",
+@check("psycopg on the downloaded libpq", "Copy this check's detail and open an issue at https://github.com/ryancicak/lakebase-move-lab/issues.",
        needs=("PostgreSQL client tools (apt.postgresql.org)", "Python packages (PyPI)"))
 def _():
     global psycopg
@@ -361,7 +373,7 @@ def cli(*args, cwd=None, ws=None):
     return result.returncode, (result.stdout + result.stderr).strip()
 
 
-@check("CLI signs in as you", "The CLI signs in with this notebook's own sign-in. Send the error to the lab's owner.",
+@check("CLI signs in as you", "Copy this check's detail and open an issue at https://github.com/ryancicak/lakebase-move-lab/issues.",
        needs=("Databricks CLI (github.com)", SDK_CHECK))
 def _():
     rc, out = cli("current-user", "me", "-o", "json")
@@ -452,15 +464,7 @@ def _():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Lakebase: the steps the lab relies on
-# MAGIC
-# MAGIC A bundle deploys a throwaway project the same way the lab builds its new home: the project, an adopted `production` branch, and a `development` branch with its own compute. Then the check:
-# MAGIC
-# MAGIC * connects with a login token;
-# MAGIC * creates a second database;
-# MAGIC * sets up roles and grants with the lab's own SQL;
-# MAGIC * runs `pg_dump` and a filtered `pg_restore` into the second database;
-# MAGIC * tries a point-in-time branch and a snapshot.
+# MAGIC ### Lakebase operations
 
 # COMMAND ----------
 
@@ -592,25 +596,30 @@ def public_address(host):
 def connect(branch, dbname=DB, ws=None):
     """Open a Postgres connection with a fresh login token. Retries while the compute wakes up.
 
-    ws is the other workspace's sign-in, for its computes. As in the lab, the normal route comes first; on
-    "External authorization failed" (which a Databricks proxy answered in testing), it switches that compute
-    to its public address.
+    ws is the other workspace's sign-in, for its computes. As in the lab, the normal route comes first.
+    A proxy authorization refusal or hostname mismatch tries the public address with TLS verification still on.
     """
     endpoint, host = endpoint_of(branch, ws=ws)
     token = (ws or w).postgres.generate_database_credential(endpoint=endpoint).token
-    for attempt in range(6):
+    elsewhere = ws is not None and ws is not w
+    attempt = 0
+    while attempt < 6:
         try:
-            conn = psycopg.connect(host=host, dbname=dbname, user=NEW_USER if ws else USER, password=token,
-                                   sslmode="verify-full", connect_timeout=30, autocommit=True,
+            conn = psycopg.connect(host=host, dbname=dbname, user=NEW_USER if elsewhere else USER, password=token,
+                                   sslmode="verify-full", sslrootcert="system", connect_timeout=30, autocommit=True,
                                    **({"hostaddr": ROUTES[host]} if ROUTES.get(host) else {}))
-            if ws:
+            if elsewhere:
                 ROUTES.setdefault(host, None)
             return conn
         except psycopg.OperationalError as e:
-            if ws and host not in ROUTES and "External authorization failed" in str(e):
+            message = str(e)
+            route_refused = "External authorization failed" in message or (
+                "server certificate for" in message and "does not match host name" in message)
+            if elsewhere and host not in ROUTES and route_refused:
                 ROUTES[host] = public_address(host)
-                continue
-            if attempt == 5:
+                continue  # changing routes gets its own attempt, even on the last retry
+            attempt += 1
+            if attempt == 6:
                 raise
             time.sleep(10)
 
@@ -618,11 +627,12 @@ def connect(branch, dbname=DB, ws=None):
 def run_pg(tool, branch, args, dbname=DB, ws=None):
     """Run pg_dump or pg_restore against one database. The token goes in the environment, never on screen."""
     endpoint, host = endpoint_of(branch, ws=ws)
-    if ws and host not in ROUTES:
+    elsewhere = ws is not None and ws is not w
+    if elsewhere and host not in ROUTES:
         connect(branch, dbname, ws=ws).close()  # finds out which route this compute needs
     token = (ws or w).postgres.generate_database_credential(endpoint=endpoint).token
-    env = dict(PG_ENV, PGHOST=host, PGPORT="5432", PGUSER=NEW_USER if ws else USER, PGPASSWORD=token,
-               PGDATABASE=dbname, PGSSLMODE="verify-full", PGCONNECT_TIMEOUT="30")
+    env = dict(PG_ENV, PGHOST=host, PGPORT="5432", PGUSER=NEW_USER if elsewhere else USER, PGPASSWORD=token,
+               PGDATABASE=dbname, PGSSLMODE="verify-full", PGSSLROOTCERT="system", PGCONNECT_TIMEOUT="30")
     if ROUTES.get(host):
         env["PGHOSTADDR"] = ROUTES[host]  # TCP to this IP; hostname in PGHOST is still verified
     result = subprocess.run([str(PG_BIN / tool), *args], env=env, capture_output=True, text=True, timeout=600)
@@ -675,7 +685,7 @@ def _():
     return f"connected as {user}, Postgres {version}"
 
 
-@check("Create a second database", "The move creates databases on the new side. Send the error to the lab's owner.",
+@check("Create a second database", "Copy this check's detail and open an issue at https://github.com/ryancicak/lakebase-move-lab/issues.",
        needs=(CONNECT_CHECK,))
 def _():
     with connect("production") as conn:
@@ -684,7 +694,7 @@ def _():
     return f"created {SECOND_DB} next to {DB}"
 
 
-@check("Roles, ownership, and grants", "The lab rebuilds access with this SQL. Send the error to the lab's owner.",
+@check("Roles, ownership, and grants", "Copy this check's detail and open an issue at https://github.com/ryancicak/lakebase-move-lab/issues.",
        needs=(CONNECT_CHECK,))
 def _():
     with connect("production") as conn:
@@ -704,7 +714,7 @@ def _():
     return "migrations can run as app_owner, and app_reader can read the tables they create"
 
 
-@check("pg_dump and a filtered pg_restore", "This is the move itself. Send the error to the lab's owner.",
+@check("pg_dump and a filtered pg_restore", "Copy this check's detail and open an issue at https://github.com/ryancicak/lakebase-move-lab/issues.",
        needs=("Create a second database", "Roles, ownership, and grants"))
 def _():
     dump, toc = WORK_DIR / "preflight.dump", WORK_DIR / "preflight.toc"
@@ -726,7 +736,7 @@ def _():
     return f"filtered {filtered} of {len(listing)} dump entries; all 100 rows restored into {SECOND_DB}"
 
 
-@check("Child branch and its compute", "The lab works on child branches. Send the error to the lab's owner.",
+@check("Child branch and its compute", "Copy this check's detail and open an issue at https://github.com/ryancicak/lakebase-move-lab/issues.",
        needs=(BUNDLE_CHECK, "psycopg on the downloaded libpq"))
 def _():
     with connect("development") as conn:
@@ -734,7 +744,7 @@ def _():
     return "the bundle's development branch answered on its own compute"
 
 
-@check("Point-in-time branch", "The lab shows point-in-time history with this. Send the error to the lab's owner.",
+@check("Point-in-time branch", "Copy this check's detail and open an issue at https://github.com/ryancicak/lakebase-move-lab/issues.",
        needs=(CONNECT_CHECK,))
 def _():
     when = max(time.time() - 3, DEPLOYED_AT + 2)  # a moment the project's history covers
@@ -778,15 +788,7 @@ def _():
 # MAGIC %md
 # MAGIC ### Second workspace (optional)
 # MAGIC
-# MAGIC Only if you picked **Another workspace** in **Choose your setup**. Then this checks the other workspace the way the lab uses it:
-# MAGIC
-# MAGIC * signs in there with the scope's address and credentials;
-# MAGIC * looks for an earlier lab run's leftovers there;
-# MAGIC * deploys the same throwaway project there with a bundle;
-# MAGIC * connects to it from here, and restores this workspace's dump into it;
-# MAGIC * tells you whether the synced table can move (it can't if the other workspace has its own metastore).
-# MAGIC
-# MAGIC With **This workspace** picked, this section does nothing.
+# MAGIC With **Another workspace**, this deploys a throwaway project there and restores this workspace's dump into it. With **This workspace**, it does nothing.
 
 # COMMAND ----------
 
@@ -821,6 +823,11 @@ else:
             raise RuntimeError(f"no URL stored for the other workspace yet (secret scope {NEW_SCOPE})")
         if not (token or client_id):
             raise RuntimeError(f"no token stored for the other workspace yet (secret scope {NEW_SCOPE})")
+        url = answer("other_url", "")
+        url = url if "://" in url else "https://" + url
+        if host.rstrip("/") != f"https://{urlsplit(url).hostname}":
+            raise RuntimeError("The saved workspace address doesn't match box 2. Use the original address "
+                               "and clean up the earlier lab in Module 7 before choosing another workspace.")
         if client_id:
             ws = WorkspaceClient(host=host, client_id=client_id, client_secret=secret("client-secret"),
                                  auth_type="oauth-m2m")
@@ -887,7 +894,7 @@ else:
         return f"connected as {user}, Postgres {version}, {route}"
 
     @check("Second workspace: restore a dump from this workspace",
-           "This is the move itself, across workspaces. Send the error to the lab's owner.",
+           "Copy this check's detail and open an issue at https://github.com/ryancicak/lakebase-move-lab/issues.",
            needs=(NEW_CONNECT, "pg_dump and a filtered pg_restore"))
     def _():
         rc, err = run_pg("pg_restore", "production",
@@ -1010,7 +1017,7 @@ def _():
 # MAGIC %md
 # MAGIC ### Cleanup
 # MAGIC
-# MAGIC First, the check makes sure `prevent_destroy` refuses a `bundle destroy`, like it will in the lab's last module. Then it takes the guard out, destroys the throwaway project with the bundle, and deletes the schema and the bundle folder. This cell runs even if earlier checks failed.
+# MAGIC Test the delete guard, then remove the throwaway projects, schema, sync, and bundle folders. This runs even if earlier checks failed. It keeps the second-workspace secret scope for the lab; delete that scope yourself if you're done.
 
 # COMMAND ----------
 
@@ -1069,7 +1076,7 @@ def _():
     for folder in (WORK_DIR, BUNDLE_DIR, BUNDLE_DIR_NEW):
         shutil.rmtree(folder, ignore_errors=True)
     if w_new is not None:
-        print(f"Left secret scope {scope} in place (the lab uses the same scope for a second workspace). "
+        print(f"Left secret scope {NEW_SCOPE} in place (the lab uses the same scope for a second workspace). "
               "Delete it yourself if you're done with that token.")
     left += [name for name, there in ((f"project {PRE_ID}", project_exists(PRE_ID)),
                                       (f"schema {PRE_SCHEMA}", schema_exists(PRE_SCHEMA)),
@@ -1084,7 +1091,7 @@ def _():
 # MAGIC %md
 # MAGIC ### Summary
 # MAGIC
-# MAGIC Every check, its result, and the fix for anything that isn't ✅. The last cell returns these results, so Genie Code or a job can read them.
+# MAGIC Read the verdict and fix any failed checks before starting the lab. A successful job status only means the checks finished, not that they passed. The last cell returns these results for Genie Code or a job.
 
 # COMMAND ----------
 

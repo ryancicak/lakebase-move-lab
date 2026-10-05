@@ -1,8 +1,8 @@
-# Facts, numbers, and where they come from
+# Limits and test sources
 
-This is the canonical list. When another reference file disagrees with it on a fact or a number, this file wins. To change a fact, change it here first, then the files that repeat it: `SKILL.md`, `lab-walkthrough.md`, `playbook.md`, `troubleshooting.md`, and `README.md`. Times and counts here come from small synthetic databases in a few specific setups, not estimates for a real move.
+Product limits and the earlier experiments are recorded here. Current notebook results, timings, source hashes, and cleanup evidence belong in [TESTING.md](../../TESTING.md). The measured databases were small and synthetic, not sizing benchmarks.
 
-Tags: **[lab]** tested in the lab (October 1 and 2, 2026); **[runs]** tested in the runs behind the lab, five moves from an AWS workspace to an Azure workspace (September 28 to 30, 2026, PostgreSQL 17.11, Databricks CLI 1.17.0); **[docs]** from the Databricks docs, not tested; **[not tested]**.
+Tags: **[lab]** tested in the lab (dates noted below; current walkthrough in [TESTING.md](../../TESTING.md)); **[runs]** tested in the runs behind the lab, five moves from an AWS workspace to an Azure workspace (September 28 to 30, 2026, PostgreSQL 17.11, Databricks CLI 1.17.0); **[docs]** from the Databricks docs, not tested; **[not tested]**.
 
 ## Branches, projects, and limits
 
@@ -16,7 +16,7 @@ Tags: **[lab]** tested in the lab (October 1 and 2, 2026); **[runs]** tested in 
 - Creating a project creates `production` and its compute; creating a branch through the API creates its compute. [runs]
 - A soft-deleted project ID can't be reused for 7 days; purging frees it right away. Redeploying after a soft-deleted branch still recreated it under the same ID. [docs] [runs]
 - Snapshots restore only inside their own project: `source_snapshot field must point to a snapshot from the same Project`. Inside a project, creating a snapshot and restoring a branch from it took a few seconds each. [runs] [lab]
-- The restore window (point-in-time history) is 2 to 30 days, 7 by default, and belongs to the project. [docs] The new project's history starts at the move: a point-in-time branch from just before the restore was empty. [lab]
+- The restore window (point-in-time history) is 2 to 30 days, 7 by default, and belongs to the project. [docs] The new project records its own history from its creation; it doesn't inherit the old project's past. A point-in-time branch from just before the restore was empty. [lab]
 - `CREATE PUBLICATION` and `CREATE SUBSCRIPTION` are disabled, so there's no logical replication between projects. [runs]
 - There's no in-place major version upgrade. [docs] Bumping `pg_version` on a deployed bundle plans a delete and recreate of the project. [runs]
 
@@ -26,11 +26,10 @@ Tags: **[lab]** tested in the lab (October 1 and 2, 2026); **[runs]** tested in 
 - `--no-owner --no-acl` took it from 18 errors to 7; the 7 left were all Lakebase platform objects. Adding the filtered list (`-L`) gave exit 0. Both are required; `--single-transaction --exit-on-error` doesn't change a clean run, but rolls back a failed one. [runs]
 - In the original test dump, the filter commented out 10 platform entries. In the lab, it commented out 33 of 81 entries in `databricks_postgres` (the synced table adds internal entries) and 8 of 31 in `reporting`. The filter reflects what Lakebase put in dumps on Postgres 17.11 in September 2026. [runs] [lab]
 - Full restore into an empty database: 8.7 seconds in the first test, versus 16.6 seconds for a data-only load into tables that migrations had created. Four re-runs were all slower for the data-only load, by varying amounts. [runs]
-- The deck's move commands ran as a script with exit 0 into fresh projects on both clouds, in 22.8 seconds and 41.7 seconds, with identical schema, rows, and sequences. [runs]
+- The move commands ran as a script with exit 0 into fresh projects on both clouds, in 22.8 seconds and 41.7 seconds, with identical schema, rows, and sequences. [runs]
 - `pg_dump` against a grandchild branch captured everything that branch sees: what it inherited plus its own changes. [runs]
 - A 20-level branch chain, built empty on the new side and filled with one dump and restore per branch: all 21 branches matched exactly, down to an md5 of every table and view. At that tiny size, each branch took about 7.5 seconds to dump and 3.5 seconds to restore. [runs]
 - A pattern in `--exclude-table` that matches nothing isn't an error, even with `--strict-names`. A view that reads an excluded synced table is still dumped, and the restore fails. (Checked on a local PostgreSQL 17.10.) [runs]
-- In the lab, each database's dump took under a second and each restore about 0.2 to 0.3 seconds. [lab]
 
 ## Synced tables
 
@@ -64,48 +63,46 @@ Tags: **[lab]** tested in the lab (October 1 and 2, 2026); **[runs]** tested in 
 - Two runs moved a live app (an order every second) with password logins, group roles, a synced catalog, a second database, unreleased work on child branches, and CI. [runs]
 - Both passed all 27 independent checks against the source, with zero lost orders: 53,299 orders in the first and 57,411 in the second. [runs]
 - Write pause: 25 min 49 s in the first (7 min 50 s of work, then 17 min 59 s waiting on a sign-off with the app ready on the new side), 5 min 48 s in the second (only production's steps while paused). [runs]
-- In the lab, writes were paused about 60 to 70 seconds, about 40 to 45 of them for the synced-table swap. The lab's pause is simulated (its pretend app just stops), and its database is tiny. [lab]
 
 ## The lab itself
 
-- Runs on serverless environment version 5 (pinned), and passed on versions 1 through 4: Python 3.10 to 3.12, x86 and ARM, Ubuntu 22.04 and 24.04. A full run takes about 2 minutes without the synced-table steps, about 4 with them. [lab]
-- The preflight notebook takes about 3 minutes. [lab]
-- The lab pins its packages: databricks-sdk 0.146.0, psycopg 3.3.6, and the Databricks CLI 1.17.0. The final October 2 runs used those, with protobuf 5.29.6 and the PostgreSQL 17.9 client tools. With the pins, the lab passed again on environment versions 1 through 4 on October 3, and once more on the final notebook, with each run printing its runtime: `client.1.13` (Python 3.10.12), `client.2.5` (3.11.10), `client.3.6` and `client.4.10` (3.12.3). Version 1 (Ubuntu 22.04) printed pip's red note that `googleapis-common-protos` wants protobuf below 5. In the notebook UI, version 5 shows an orange `Core Python package version(s) changed` box after the install (`databricks-sdk: 0.67.0 -> 0.146.0`). Both are harmless, and the lab says to expect them. [lab]
+- Runs on serverless environment version 5 (pinned), and passed on versions 1 through 4: Python 3.10 to 3.12, x86 and ARM, Ubuntu 22.04 and 24.04. [lab]
+- The lab pins databricks-sdk 0.146.0, psycopg 3.3.6, protobuf below 6, and Databricks CLI 1.17.0. The package-change notice after installation is expected. [lab]
 - In an interactive run, `dbutils.notebook.exit` replaces its cell's output with `Notebook exited: <value>`. That hid the preflight's summary table and verdict until the exit moved to a cell of its own (October 3). [lab]
 - The lab ran twice in one Python session: Module 7, then Modules 1 to 7 again. The second pass made new projects and a new restore time, and running Module 7 a third time found nothing and deployed nothing. [lab]
 - A point-in-time branch can't start before its project existed: `The provided timestamp is before your project was created, try a more recent timestamp.` [lab]
-- First-time-user runs on October 3, interactively, as a workspace user, in a freshly imported notebook. Run all with the default answers, and only `USE CATALOG` on `main`, skipped the synced-table steps and took about 2.3 minutes of cell time. With a catalog the user owned, it took about 3.2 minutes. Cell by cell, after the skip, putting that catalog in box 3 and running Step 6 again synced the table mid-lab. A second box change after that was refused, and the lab finished and cleaned up. [lab]
-- The widgets' default setting is Run Accessed Commands. With the notebook idle, a changed box re-ran **Choose your setup** and the helpers cell on their own; during a Run all, it re-ran neither, then or after. After the session detached, a changed box re-ran both too, and the helpers cell failed with `NameError: name 'os' is not defined`, because the cells between them hadn't run in the new session. Now it stops first with a message to click Run all, and Run all then passed (October 3). [lab]
+- With default answers and no `CREATE SCHEMA` on `main`, the optional sync skipped and the lab passed. With a usable catalog, the sync ran. A learner going cell by cell can fix box 3 and rerun Step 6 after a skip. [lab]
+- Setup changes are guarded once resources exist. After a session restart, run from the top before changing a box so the helper state exists. [lab]
 - Creating a project took 5 to 6 seconds in every run. Once, the CLI's 18 MB download from GitHub dropped after 64 KB (`IncompleteRead`), so the lab now tries each download three times. [lab]
 - Passed as a service principal in jobs and as a workspace user in an interactive Run all. [lab]
-- Expected data: 1,000 customers, 5,000 orders plus 25 before the pause (watermark 5025), 3 migrations on production, 200 rows in `reporting`, 50 synced rows; new orders 5026 to 5030 after the switch. [lab]
 - Names: projects `lb-move-old-<slug>-<user id>` and `lb-move-new-<slug>-<user id>`, schema `<catalog>.lb_move_<slug>_<user id>`, secret scope `lb-move-lab-<slug>-<user id>`. The user id keeps two learners whose user names start alike from sharing a schema or scope. [lab]
-- The lab tags its projects with display names, `Lakebase move lab: old home` and `Lakebase move lab: new home` (the bundle sets `display_name`; CLI 1.17.0's `bundle validate` warns on unknown fields and didn't on this one). A project's display name comes back in `status.display_name`. [lab]
-- In the Lakebase Postgres UI (the grid icon at the top right, then **Lakebase Postgres**), the projects list shows display names, so in a shared workspace every learner's old home shows as `Lakebase move lab: old home`. A project's page is `/lakebase/projects/<uid>`, with the `uid` the API returns; a URL with the project's name shows `project not found`. That's why Module 1 Step 1 prints the link. [lab]
+- The lab tags its projects `Lakebase move lab: old home` and `Lakebase move lab: new home`. The project link uses the API's UID because a URL with the project name returns `project not found`. [lab]
 - The lab only reuses a project it made in the same session. A same-named project with the lab's tag stops it as a leftover from an earlier run; one without the tag stops it as someone else's. Cleanup deletes only tagged projects. [lab]
 - The copy check compares each database's app schema definitions (a schema-only `pg_dump` of `app`, without owners, grants, and the dump's own header lines) and every app table's row count and checksum, plus the watermark and migration history. It doesn't cover access, which is rebuilt later, or anything outside the `app` schema. [lab]
-- Module 7 cleaned up a run stopped on purpose right after Module 3's deploy: both projects, the synced table, the schema, and the bundle folder. It worked in the same session, and after re-running the cells from the top through Module 0 (which restarts Python), when it deleted the new home directly because the session had no bundle. A run stopped right after Module 4's synced-table move was cleaned up too: Step 1's destroy was refused, and Step 2 deleted the synced table, both projects, and the schema (October 3). [lab]
+- Fresh installs use `sslrootcert=system` for psycopg and `PGSSLROOTCERT=system` for the Postgres tools, with hostname and certificate verification still on. The earlier default-root-certificate failure and corrected reruns are in `TESTING.md`. [lab]
+- Both setup cells refuse to replace a saved destination with a different workspace. Later sign-in checks compare the saved host with box 2 before using its credentials. Connection retries give a route change its own attempt, even on the last retry, and exhausted retries raise rather than returning `None`. Covered in local helper tests; the rare last-retry and conflicting-scope cases were mocked, not forced in a live workspace. [lab]
+- Module 7 cleaned up runs stopped after the bundle deploy and after the synced-table move, both in the same session and after Python restarted. [lab]
 - The project's creator was a member of `pg_read_all_stats`, so `pg_stat_activity` showed every session's state, including another session `idle in transaction`. Lakebase's own `cloud_admin` sessions sat idle in the `postgres` database. The lab's pause check counts other client sessions in the app databases that are `active` or `idle in transaction`. [lab]
 
 ## Two workspaces (the lab's optional mode)
 
-- From an AWS workspace (us-west-2) to an Azure workspace (eastus2), as serverless jobs and interactively on environment version 5, October 2, 2026: every cell passed. The restores exited 0 in about 5 seconds across clouds, every app table matched, the last checklist passed 7 of 7, writes were paused 44 to 57 seconds (no synced-table swap, tiny data; 57 once the copy check also compared schemas, which took about 18 seconds across clouds), and the teardown cleaned up both workspaces. [lab]
-- In that setup, from serverless in the AWS workspace, Lakebase hostnames resolved to one private Databricks proxy address, for that workspace's computes and the Azure workspace's. The proxy refused the Azure compute: `FATAL: External authorization failed`. Connecting to that compute's public IP from public DNS (libpq `hostaddr`) worked. With the fallback, the lab printed that it switched, and the preflight's connect check reported the public address. [lab] The live-app runs never hit this, because they ran `pg_dump` and `pg_restore` outside Databricks. [runs] Other pairs, like two workspaces in the same cloud or region, weren't tested, so the lab tries the normal route first and switches a compute to its public address only on that error. [not tested]
+- From AWS serverless, the tested Azure computes needed their public IP through libpq `hostaddr` after the proxy either refused authorization or presented a certificate for the wrong hostname. Both routes keep the original hostname, `verify-full`, and system trust. Only those two signatures enable fallback. Other workspace pairs weren't tested. [lab] [not tested]
 - Across workspaces, the cross-project branch and the cross-project snapshot were rejected with the same errors as inside one workspace. [lab]
 - The notebook's bundle deploy, redeploy, and destroy ran against the other workspace, with the CLI signed in through the secret scope's token. [lab]
 - The two workspaces had separate metastores, so the lab skipped the synced table on the new side. Moving a synced table between two workspaces that share a metastore wasn't tested. [lab] [not tested]
-- The preflight with a second workspace: 25 checks passed and 1 warning (separate metastores), and its cleanup ran in both workspaces. [lab]
 - **Choose your setup** (the first code cell) puts three widgets at the top. In an interactive notebook, Databricks re-ran it on its own when the dropdown or the URL box changed. [lab]
 - On serverless, Python's `getpass` shows a masked input box under the cell in an interactive notebook, and what you type isn't echoed. In a job, it raises `StdinNotImplementedError` at once, so the lab stops with the CLI command to store the token instead of hanging. [lab]
 - A wrong token got the "That token didn't work in the other workspace" prompt; with a working token stored, the cell signed in and printed the user name there. [lab]
+- An empty token input is rejected with `The token box was empty` before setup saves a token. The current helper tests cover this in both notebooks. A token already stored in the scope uses the same sign-in check without showing the hidden input again. [lab]
 
 ## Not tested
 
 - Large volumes (the runs moved about 200,000 rows, 2.3 MB compressed) and parallel restore.
 - Writes during the dump; every run paused writes first.
 - Classic clusters for the lab.
-- Disaster recovery (Private Preview).
 - The bundle resources for databases, roles, catalogs, synced tables, and snapshot schedules.
 - Registering a Lakebase database in Unity Catalog, protected branches, HA and read replicas, and the Data API.
 - Secretless GitHub sign-in for CI.
 - An app that signs in with OAuth through a move (the live-app runs used a password role).
+- Disaster recovery is a separate regional-standby workflow, not a one-time move. It is Private Preview and wasn't tested here. [docs]
+- Lakebase Change Data Feed streams row changes into Delta tables, not into another Lakebase branch. It is Public Preview and wasn't tested here. [docs]
