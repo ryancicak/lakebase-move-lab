@@ -5,6 +5,29 @@ SPDX-License-Identifier: Apache-2.0
 
 # First-run check
 
+## October 9, 2026: published-commit retest
+
+Published GitHub commit `6adc527024b103ecd484086d619d00bd0d6f7043` passed fresh single-workspace installs on AWS, then Azure. Both used Databricks CLI `1.17.0`. No notebook changes, job retries, or recovery runs were needed.
+
+Each run used a new Git folder on `main`. Before execution, the notebook had no outputs, saved widgets, or execution timestamps. Its source matched the published commit before and after the run; executed code matched the untouched baseline.
+
+| Run | Catalog | Result | Job Runtime | Parent Run ID |
+|---|---|---|---|---|
+| AWS, default answers | `main` | 39 cells, 7 switch checks; expected optional-sync permission skip | 156.1 seconds | `671179752461314` |
+| AWS, full product sync | `cicaktest_catalog` | 39 cells, 7 switch checks, 13 behavior checks passed | 244.7 seconds | `1003139968731245` |
+| AWS preflight | `cicaktest_catalog` | 20 passes; no warnings, failures, or skips | 141.3 seconds | `101856116811193` |
+| Azure, first fresh copy | `main` | 39 cells, 7 switch checks, 13 behavior checks passed | 308.5 seconds | `1066527006215543` |
+| Azure, second fresh copy | `main` | 39 cells, 7 switch checks, 13 behavior checks passed | 327.5 seconds | `459935120915294` |
+| Azure preflight | `main` | 20 passes; no warnings, failures, or skips | 177.5 seconds | `538852189853037` |
+
+AWS defaults passed the 12 non-sync behaviors and a separate check that the permission rejection in `main` caused both optional sync steps to skip. The full-sync runs confirmed 50 rows in each project and matching Delta versions on the new home.
+
+Separate API checks confirmed all 7 exact lab resources absent after each lab run and all 6 after each preflight. All saved runs also passed stricter checks for complete outputs, exact table and check identities, matching source, and valid execution timestamps. The duplicate-key case confirms restore rejection and the preserved customer count, not a full before-and-after database fingerprint.
+
+All 37 repository tests, 61 local evidence-driver tests, and 45 local file and section links passed. Evidence is under `.tmp/retest-20261009-*`, including the untouched baselines, executed outputs, stricter assessments, and cleanup records.
+
+These runs used Ryan's existing admin accounts and serverless jobs. This round did not test a new non-admin account, browser click-through, Genie Code skill installation, or two-workspace mode.
+
 ## Azure transport workaround
 
 The revised lab passed twice in Azure, and the revised preflight passed all 20 checks. Tested October 8-9, 2026, in Chicago, with both projects in `https://adb-984752964297111.11.azuredatabricks.net` and catalog `main`.
