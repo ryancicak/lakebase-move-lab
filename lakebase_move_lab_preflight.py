@@ -369,6 +369,9 @@ def cli(*args, cwd=None, ws=None):
         raise RuntimeError("couldn't get a token for the CLI from this notebook's sign-in")
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(CLI_DIR),
            "DATABRICKS_HOST": ws.config.host, "DATABRICKS_TOKEN": auth.split(" ", 1)[1]}
+    # Azure workspace-file calls stalled with the CLI's default transport in lab tests.
+    if (urlsplit(ws.config.host).hostname or "").endswith(".azuredatabricks.net"):
+        env["GODEBUG"] = "http2client=0"
     result = subprocess.run([str(CLI), *args], env=env, cwd=cwd, capture_output=True, text=True, timeout=900)
     return result.returncode, (result.stdout + result.stderr).strip()
 

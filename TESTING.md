@@ -5,6 +5,89 @@ SPDX-License-Identifier: Apache-2.0
 
 # First-run check
 
+## Azure transport workaround
+
+The revised lab passed twice in Azure, and the revised preflight passed all 20 checks. Tested October 8-9, 2026, in Chicago, with both projects in `https://adb-984752964297111.11.azuredatabricks.net` and catalog `main`.
+
+These were fresh imports of the working-tree notebooks, not GitHub `main`. Before each run, exports had no outputs, saved widgets, or execution timestamps. Executed code matched those exports; source stayed unchanged afterward. Job retries were disabled.
+
+Both notebooks now use HTTP/1.1 for CLI subprocesses targeting Azure. AWS and GCP keep their existing transport. TLS verification stays on, and no deployment replay was added.
+
+| Run | Result | Job Runtime | Parent Run ID |
+|---|---|---|---|
+| Azure lab, first fresh copy | 39 cells, 7 switch checks, 13 behavior checks passed | 303.2 seconds | `1079278363859690` |
+| Azure lab, second fresh copy | 39 cells, 7 switch checks, 13 behavior checks passed | 607.2 seconds | `817322391016575` |
+| Azure preflight, fresh copy | 20 passes; no failures, warnings, or skips | 189.9 seconds | `430106074031780` |
+
+Separate API checks confirmed every exact lab or preflight resource absent after its run. The slower lab run spent 320 seconds in the helpers cell before creating either project, then completed without a restart or repair.
+
+**The underlying timeout cause is still unproven.** Before the change, an empty-bundle probe (`632196313546754`) passed 8 commands on each transport. An instrumented full run (`759338322333705`) and a fresh unmodified run (`737718148320920`) also passed. None reproduced the earlier failures. HTTP/1.1 is a tested workaround, not proof that HTTP/2 caused them.
+
+Some completed jobs still had cell outputs being saved. Read-only recaptures confirmed both diagnostic full runs passed all 13 behavior checks; the initial incomplete assessments remain. The test runner now waits for outputs before assessing a completed job.
+
+Tested source SHA-256:
+
+- Main: `ebc18e8b176eb72095ac9c1f3f5c9a0799c1d9c4fd8a015f06bdfc8cc2584320`.
+- Preflight: `63e8e69d936c256b9d589b5a17aa9c1d576b6ebe4c5e8e9df8e0c2ecb167357c`.
+
+The fresh baselines, executed outputs, and cleanup proofs are under `.tmp/azure-http1-*`. Diagnostics are under `.tmp/azure-transport-probe-20261008-fixed`, `.tmp/azure-full-transport-diagnostic-20261008`, and `.tmp/azure-original-no-debug-20261008`.
+
+All 37 repository helper tests, 7 new output-readiness and acceptance tests, and 45 local file and section links passed. The cloud runs used an existing admin account and serverless jobs. They do not validate new non-admin users or the interactive browser setup.
+
+An unused copy of the tested lab and preflight is installed at `/Users/ryan.cicak@databricks.com/lakebase-move-azure-ready-20261009-44f8c3a1`. Main notebook ID: `3316087475993411`; preflight: `3316087475993410`. Both source exports match the hashes above, with no saved widgets, outputs, or execution timestamps. Verification is under `.tmp/azure-ready-copy-20261009-44f8c3a1`.
+
+## October 8, 2026: separate AWS and Azure installs
+
+Tested October 8 in Chicago, October 9 in UTC. Installed published GitHub commit `51298a004ed9ea59a1075630a0278e178016c1b5` in new Git folders. AWS ran first, then Azure. Each lab kept both projects in its own workspace: `where=This workspace`, an empty `other_url`, and no second-workspace credentials.
+
+The unused exports had no outputs, saved widgets, or execution timestamps. Executed code matched those exports, and the notebook source stayed unchanged after each completed run. No notebook code changed during this retest.
+
+| Run | Result | Job Runtime | Parent Run ID |
+|---|---|---|---|
+| AWS, defaults (`main`) | 39 cells, 7 final checks; optional sync skipped because Ryan lacks `CREATE SCHEMA` in `main` | 144.6 seconds | `976249245297197` |
+| AWS, product sync (`cicaktest_catalog`) | 39 cells, 7 checks; 50 rows synced in each project, Delta version 1 current | 233.4 seconds | `932564461857045` |
+| AWS preflight (`cicaktest_catalog`) | 20 passes; no failures, warnings, or skips | 140.2 seconds | `1019211844705784` |
+| Azure, defaults (`main`), fresh retry | 39 cells, 7 checks; 50 rows synced in each project, Delta version 1 current | 403.1 seconds | `764054889173912` |
+| Azure preflight (`main`) | 20 passes; no failures, warnings, or skips | 193.1 seconds | `345881737463281` |
+| Azure, another fresh copy (`main`) | Failed in Module 4's dev redeploy; 32 cells finished and 7 switch checks passed | 464.2 seconds | `277402814269363` |
+| Azure, restart cleanup after that failure | All 9 selected setup and cleanup cells passed; 7 exact resources independently confirmed absent | 75.6 seconds | `560566585813311` |
+| Azure, second fresh confirmation (`main`) | Failed again in Module 4's dev redeploy; 32 cells finished and 7 switch checks passed | 382.2 seconds | `235622369184650` |
+| Azure, state-file check and restart cleanup | 9 unchanged lab cells plus a read-only probe finished; 7 exact lab resources independently confirmed absent | 83.4 seconds | `619015776356428` |
+
+In the completed full runs, both database restores exited 0. App schemas and all five app tables matched. New orders were 5026 through 5030; old production stayed at 5025. Development rebuild, the rolled-back duplicate-key restore, point-in-time branch, same-project restrictions, and the destroy guard behaved as expected. After each full run or documented recovery, separate API checks confirmed that the exact lab projects, schema, tables, sync, and bundle folder were gone.
+
+These times are for the tiny lab databases, not a production move.
+
+### Azure timeouts
+
+Run `1054775432311813`, task `295013964460061`, stopped at **Module 3: bundle validate**. The workspace `get-status` request for the bundle's `new_home/files` folder timed out after 90 seconds. The earlier steps, including the 50-row sync, passed; Modules 4 through 7 did not run.
+
+Databricks automatically retried the task. The lab's leftover-project guard stopped that retry. Later test jobs had automatic retries disabled.
+
+After both attempts were terminal, we tested the documented restart recovery: run setup and Module 0, skip Modules 1 through 6, then run Module 7. Recovery run `827443103815472` passed its 9 selected cells, and independent API checks found every exact lab resource absent. The fresh Azure retry above then passed with the same published source.
+
+**Two later fresh runs failed.** Both unused Azure notebooks ran the same published commit with job retries disabled and stopped in **Module 4: delete the dev branch and redeploy**. Both database restores and all 7 switch checks passed before each failure. The new home received orders 5026 through 5030; old production stayed at 5025.
+
+The first stopped at the workspace `mkdirs` request for `new_home/artifacts`. The next stopped at `get-status` for `new_home/state/terraform.tfstate`, with `return_export_info=true`. Both CLI errors were `request timed out after 1m30s of inactivity`. The empty development branch had been deleted; its redeploy did not finish, and the remaining cells, including cleanup, were skipped.
+
+Recovery run `560566585813311` used the unchanged 9 setup and cleanup cells after the first of these failures. Separate API checks confirmed all 7 exact lab resources absent. An extra diagnostic cell initially failed on an unsupported SDK constructor argument in the local test helper, not in the published lab; we removed it from recovery and corrected it for a separate test.
+
+That separate user-folder test, run `173071573293882`, passed 16 `get-status` and `mkdirs` calls across the SDK, the CLI's normal environment, an inherited environment, and HTTP/1.1. No proxy or custom certificate environment variables were present. Independent checks confirmed the probe folder was deleted. These calls did not reproduce the bundle failure or establish its cause.
+
+After the second failure, run `619015776356428` checked the exact state-file metadata request before running the 9 unchanged setup and cleanup cells. SDK lookups returned `ResourceDoesNotExist` quickly; the CLI probes exited nonzero without a timeout. This did not reproduce the bundle's inactivity timeout. The probe did not print or retain export-info response bodies, which can contain signed URLs. Cleanup finished, and separate API checks confirmed all 7 exact lab resources absent again.
+
+These failures led to the Azure transport workaround recorded above. Their underlying cause is still unproven.
+
+### Scope and evidence
+
+These were fresh notebooks, **not new accounts**. Both existing accounts have admin membership. Runs used serverless notebook jobs through the Jobs API. Browser sign-in stopped at Okta device verification, so this retest did not validate the click-through setup or Genie Code skill installation. Non-admin setup still needs a learner's check.
+
+The new exports, job outputs, pristine baselines, and independent cleanup records are under `.tmp/native-20261008-*`. The native Azure result is an Azure-to-Azure move, not the older AWS-to-Azure test below.
+
+All 31 local helper tests, 45 file and section links, and 34 local evidence-driver tests passed again.
+
+## October 5, 2026
+
 Reran the revised checkout on October 5, 2026, in Chicago and UTC.
 
 Three fresh lab notebooks passed all 39 code cells and all 7 final checks: AWS with default answers, AWS with synced product data, then AWS-to-Azure. The revised two-workspace preflight passed 25 checks with one expected separate-metastore warning. Independent API checks confirmed cleanup after each run.
@@ -26,7 +109,7 @@ For the default AWS run, Ryan couldn't create a schema in `main`. The product-da
 
 ## Results
 
-These are the October 5 reruns of the current source, not the earlier wording versions.
+These are the October 5 reruns of the source recorded below.
 
 | Run | Result | Final Checks | Runtime | Simulated Write Pause |
 |---|---|---|---|---|
@@ -140,26 +223,26 @@ The raw exports and API reports are retained locally under `.tmp/`, which is ign
 | AWS preflight, 20 of 20 | `.tmp/aws_preflight_patched_465045170784471/summary.json`, run `556770938732573` |
 | Two-workspace preflight cleanup-message failure, with independent cleanup | `.tmp/preflight-aws-azure-cleanup-failed/`, run `1052727523054822` |
 | Final two-workspace preflight, 25 passes and 1 expected warning | `.tmp/preflight-aws-azure-verified/`, run `602297631072876` |
-| Current AWS default, untouched before setup and completed after | `.tmp/rerun-aws-default-before.ipynb`, `.tmp/rerun-aws-default-final.ipynb`, notebook `1949836290777222` |
-| Current AWS product-data run, untouched before setup and completed after | `.tmp/rerun-aws-sync-before.ipynb`, `.tmp/rerun-aws-sync-final.ipynb`, notebook `1949836290777231` |
-| Current AWS-to-Azure, untouched before setup and completed after | `.tmp/rerun-aws-azure-before.ipynb`, `.tmp/rerun-aws-azure-final.ipynb`, notebook `1949836290777257` |
+| October 5 AWS default, untouched before setup and completed after | `.tmp/rerun-aws-default-before.ipynb`, `.tmp/rerun-aws-default-final.ipynb`, notebook `1949836290777222` |
+| October 5 AWS product-data run, untouched before setup and completed after | `.tmp/rerun-aws-sync-before.ipynb`, `.tmp/rerun-aws-sync-final.ipynb`, notebook `1949836290777231` |
+| October 5 AWS-to-Azure, untouched before setup and completed after | `.tmp/rerun-aws-azure-before.ipynb`, `.tmp/rerun-aws-azure-final.ipynb`, notebook `1949836290777257` |
 | Hidden input and verified Azure setup before Run all | `.tmp/rerun-aws-azure-token-ui.txt`, `.tmp/rerun-aws-azure-signed-in-ui.txt`, `.tmp/rerun-aws-azure-configured.ipynb`; local driver `.tmp/browser_bridge.py` |
-| Independent cleanup after each current lab run | `.tmp/rerun-aws-default-cleanup.json`, `.tmp/rerun-aws-sync-cleanup.json`, `.tmp/rerun-aws-azure-cleanup.json` |
+| Independent cleanup after each October 5 lab run | `.tmp/rerun-aws-default-cleanup.json`, `.tmp/rerun-aws-sync-cleanup.json`, `.tmp/rerun-aws-azure-cleanup.json` |
 | Revised preflight, untouched source and completed job | `.tmp/rerun-preflight-aws-azure-before.ipynb`, `.tmp/preflight-rerun-aws-azure-20261005/`, run `762433169041907`, task run `703176829605757` |
-| Current unused AWS starting copy | `.tmp/rerun-ready-main-unused.ipynb`, `.tmp/rerun-ready-main-source.py`, notebook `465045170785742` |
-| Current unused AWS preflight | `.tmp/rerun-ready-preflight-unused.ipynb`, `.tmp/rerun-ready-preflight-source.py` |
+| Unused AWS starting copy from October 5 | `.tmp/rerun-ready-main-unused.ipynb`, `.tmp/rerun-ready-main-source.py`, notebook `465045170785742` |
+| Unused AWS preflight from October 5 | `.tmp/rerun-ready-preflight-unused.ipynb`, `.tmp/rerun-ready-preflight-source.py` |
 
 The earlier cloud runs used main source SHA-256 `2d7a166bd0b4fe3761465ce42deb952d8ade464a05780b36c497a9865cb14777`. Their source exports matched it, apart from the CLI omitting the final newline.
 
 The earlier cleanup-fix preflight used source SHA-256 `65ec16d1a900c0c4477da88e06835d5045fb3d250878bc0e832abf7911e11160`.
 
-### Current checkout
+### October 5 source
 
-All three fresh lab reruns used the current main source. The revised preflight also matched its local source before and after execution. The source-only exports are retained beside the completed notebook exports.
+All three October 5 lab reruns used the main source listed below. The preflight matched its local source before and after execution. Source-only exports are retained beside the completed notebook exports.
 
-**Both current notebook sources have now run end-to-end in the cloud.** The shell wrapper and JDBC example in the playbook remain untested.
+**Both October 5 notebook sources ran end-to-end in the cloud.** The shell wrapper and JDBC example in the playbook remain untested.
 
-Current local SHA-256:
+SHA-256 used on October 5:
 
 - Main: `c3b8ea4612591038fa02005a490ce829a7b653bf97886e1f43885194db9b63b1`.
 - Preflight: `52d91620e0484e4980aa2f5a8078bab3331dbaaf01f4a02b71c460ef24827a6b`.

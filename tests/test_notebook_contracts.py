@@ -49,6 +49,90 @@ class NotebookSyntaxTests(unittest.TestCase):
                 self.assertTrue(source(notebook).startswith("# Databricks notebook source\n"))
 
 
+class CliTransportTests(unittest.TestCase):
+    def run_cli(self, notebook, host, source_host=AWS, authorization="Bearer notebook-token", returncode=0):
+        client = lambda address: types.SimpleNamespace(config=types.SimpleNamespace(
+            host=address, authenticate=lambda: {"Authorization": authorization}))
+        process = MagicMock()
+        process.run.return_value = types.SimpleNamespace(
+            returncode=returncode, stdout="command output\n", stderr="command detail\n")
+        namespace = {
+            "w": client(source_host), "w_new": client(host),
+            "CLI": Path("/test/cli/databricks"), "CLI_DIR": Path("/test/cli"),
+            "BUNDLE_DIR": Path("/test/bundle"), "urlsplit": urlsplit,
+            "os": types.SimpleNamespace(environ={
+                "PATH": "/usr/bin", "DATABRICKS_HOST": "https://unrelated.example.com",
+                "DATABRICKS_TOKEN": "unrelated-token", "GODEBUG": "unrelated=1",
+                "DATABRICKS_INSECURE_SKIP_VERIFY": "true",
+            }),
+            "subprocess": process,
+        }
+        invoke = load_function(notebook, "cli", namespace)
+        kwargs = {"cwd": Path("/test/bundle")}
+        if notebook == NOTEBOOKS[1]:
+            kwargs["ws"] = client(host)
+        return process, lambda: invoke("bundle", "deploy", **kwargs)
+
+    def test_azure_cli_uses_http1_in_both_notebooks(self):
+        for notebook in NOTEBOOKS:
+            for host in (AZURE, AZURE + "/"):
+                with self.subTest(notebook=notebook, host=host):
+                    process, invoke = self.run_cli(notebook, host)
+                    self.assertEqual(invoke(), (0, "command output\ncommand detail"))
+                    env = process.run.call_args.kwargs["env"]
+                    self.assertEqual(env["GODEBUG"], "http2client=0")
+                    self.assertEqual(env["DATABRICKS_HOST"], host)
+                    self.assertEqual(env["DATABRICKS_TOKEN"], "notebook-token")
+                    self.assertNotIn("DATABRICKS_INSECURE_SKIP_VERIFY", env)
+                    self.assertEqual(process.run.call_args.kwargs["timeout"], 900)
+                    process.run.assert_called_once()
+
+    def test_aws_cli_keeps_default_transport_even_from_azure(self):
+        for notebook in NOTEBOOKS:
+            with self.subTest(notebook=notebook):
+                process, invoke = self.run_cli(notebook, AWS, source_host=AZURE)
+                invoke()
+                env = process.run.call_args.kwargs["env"]
+                self.assertNotIn("GODEBUG", env)
+                self.assertEqual(env["DATABRICKS_HOST"], AWS)
+
+    def test_gcp_cli_keeps_default_transport(self):
+        for notebook in NOTEBOOKS:
+            with self.subTest(notebook=notebook):
+                process, invoke = self.run_cli(notebook, "https://example.1.gcp.databricks.com")
+                invoke()
+                self.assertNotIn("GODEBUG", process.run.call_args.kwargs["env"])
+
+    def test_preflight_default_client_uses_its_own_host(self):
+        process, invoke = self.run_cli(NOTEBOOKS[1], AZURE)
+        workspace = types.SimpleNamespace(config=types.SimpleNamespace(
+            host=AZURE, authenticate=lambda: {"Authorization": "Bearer notebook-token"}))
+        namespace = {
+            "w": workspace, "CLI": Path("/test/cli/databricks"), "CLI_DIR": Path("/test/cli"),
+            "os": types.SimpleNamespace(environ={"PATH": "/usr/bin"}),
+            "subprocess": process, "urlsplit": urlsplit,
+        }
+        load_function(NOTEBOOKS[1], "cli", namespace)("current-user", "me")
+        self.assertEqual(process.run.call_args.kwargs["env"]["GODEBUG"], "http2client=0")
+        process.run.assert_called_once()
+
+    def test_failed_bundle_command_is_not_replayed(self):
+        for notebook in NOTEBOOKS:
+            with self.subTest(notebook=notebook):
+                process, invoke = self.run_cli(notebook, AZURE, returncode=1)
+                self.assertEqual(invoke(), (1, "command output\ncommand detail"))
+                process.run.assert_called_once()
+
+    def test_missing_bearer_token_fails_before_starting_cli(self):
+        for notebook in NOTEBOOKS:
+            for authorization in ("", "Basic notebook-token"):
+                with self.subTest(notebook=notebook, authorization=authorization):
+                    process, invoke = self.run_cli(notebook, AZURE, authorization=authorization)
+                    with self.assertRaises(RuntimeError):
+                        invoke()
+                    process.run.assert_not_called()
+
+
 class WorkspaceUrlTests(unittest.TestCase):
     def test_workspace_addresses_and_browser_links(self):
         cases = {
