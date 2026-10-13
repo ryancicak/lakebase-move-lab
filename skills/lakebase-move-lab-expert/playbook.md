@@ -35,6 +35,7 @@ Deploy the new home, but **don't migrate new production**. The full restore brin
 These were tested with the CLI version recorded in [facts](facts.md#bundles). Lakebase bundle support is labeled Beta. [docs]
 
 - Use `replace_existing: true` for production and any already-created compute you declare. Lakebase creates them automatically; the bundle must adopt them.
+- If your CI retries a failed deploy, consider `replace_existing: true` on added branches too. In the lab's tests, a branch create that failed with `500 INTERNAL_ERROR` had still made the branch, so a plain retry would fail with `ALREADY_EXISTS`. [lab] It also adopts a branch someone made by hand with that ID, so use it only on branches the bundle owns.
 - Give each added branch `no_expiry: true` or a `ttl`. Validation can pass without it, but deployment fails.
 - Put `lifecycle: { prevent_destroy: true }` on the project and production. It blocks destroy and changes that would recreate them. It doesn't protect a resource removed from the file.
 - Leave `purge_on_delete` off production. It's a hard delete, used in the lab so names are immediately reusable.
@@ -167,6 +168,8 @@ Four-way `pg_dump -Fd -j 4` was tested. Large databases and parallel restore wer
 ## Keep recovery available
 
 Keep the old project for at least one restore window, or longer if your recovery plan requires it. Its history and snapshots don't transfer. The [retention limits](facts.md#branches-projects-and-limits) give the current default and range.
+
+If you script a point-in-time branch, don't ask for a time exactly on a whole minute. Those failed with `INTERNAL_ERROR` in the lab's tests, and a second either side worked. [lab]
 
 Set `history_retention_duration` and the snapshot schedule on the new project. The bundle's retention setting was tested; `postgres_snapshot_schedules` wasn't. For a pre-move restore point beyond the history window, take a manual snapshot while writes are paused, with `no_expiry` or an appropriate TTL, and retain the old project. Manual snapshots are billed as full snapshots. [docs]
 

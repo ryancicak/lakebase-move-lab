@@ -17,6 +17,8 @@ Tags: **[lab]** tested in the lab (dates noted below; current walkthrough in [TE
 - A soft-deleted project ID can't be reused for 7 days; purging frees it right away. Redeploying after a soft-deleted branch still recreated it under the same ID. [docs] [runs]
 - Snapshots restore only inside their own project: `source_snapshot field must point to a snapshot from the same Project`. Inside a project, creating a snapshot and restoring a branch from it took a few seconds each. [runs] [lab]
 - The restore window (point-in-time history) is 2 to 30 days, 7 by default, and belongs to the project. [docs] The new project records its own history from its creation; it doesn't inherit the old project's past. A point-in-time branch from just before the restore was empty. [lab]
+- A point-in-time branch whose time fell exactly on a whole minute failed with `INTERNAL_ERROR` every time, at every minute tried from 11:25 to 11:31 (America/Chicago); one second either side worked. Seen in AWS on October 13, 2026. [lab]
+- A create can fail and still make the resource. A `500 INTERNAL_ERROR` on a branch create left the branch in place, and an SDK resend after a dropped connection got `branch already exists` for the branch its first request made. Both were seen in Azure on October 13, 2026. [lab]
 - `CREATE PUBLICATION` and `CREATE SUBSCRIPTION` are disabled, so there's no logical replication between projects. [runs]
 - There's no in-place major version upgrade. [docs] Bumping `pg_version` on a deployed bundle plans a delete and recreate of the project. [runs]
 
@@ -34,7 +36,7 @@ Tags: **[lab]** tested in the lab (dates noted below; current walkthrough in [TE
 ## Synced tables
 
 - A synced table through `pg_dump` fails on restore with `[Databricks SyncedTable] Consider using the databricks_synced_table_add_manager ...`. Stripping its label gives an empty partitioned table that blocks recreating the sync. Excluding it and recreating the sync works. [runs]
-- The sync filled about 33 seconds after the create call reported done, for 1,000 rows in the runs and 50 rows in the lab. [runs] [lab]
+- The sync filled about 33 seconds after the create call reported done, for 1,000 rows in the runs and 50 rows in the lab. [runs] [lab] On October 13, 2026, it took 33 to 66 seconds in Azure, and once the Postgres table itself hadn't appeared after 30 seconds. [lab]
 - `get-synced-table` doesn't return the sync's spec, so keep it in Git. [runs]
 - In the lab, the swap (delete the old sync, create the new one, wait for the rows) took about 40 to 45 seconds. [lab]
 - In one workspace (one metastore), a synced table's name can point at only one project: creating it on the new project had to wait until the old sync was deleted and the name was released. [lab] Creating the new sync before the pause when the metastores are separate follows from that, but wasn't tested; the two live-app runs created their syncs during the pause. [not tested]
@@ -44,6 +46,7 @@ Tags: **[lab]** tested in the lab (dates noted below; current walkthrough in [TE
 - A bundle deploy created a project, four branches, and four computes in 23.8 to 25 seconds, with zero tables on every branch. [runs] In the lab, a deploy of the project, two branches, and one compute took about 15 seconds. [lab]
 - `bundle validate` passes without `no_expiry`; `bundle deploy` then fails with `Expiration must be specified`. [runs]
 - `lifecycle.prevent_destroy` refused `bundle destroy` and a `pg_version` bump, with CLI 1.17.0. [runs] [lab]
+- `replace_existing: true` takes over a branch that already exists with the same ID instead of failing with `ALREADY_EXISTS`, and only acts when the branch is created. [docs] The lab sets it on development and retries a bundle command twice on `INTERNAL_ERROR`, `TEMPORARILY_UNAVAILABLE`, `try again later`, or a timeout. That's covered in local tests; no deploy needed a retry in the October 13, 2026, runs. [lab] [not tested]
 - `bundle generate` has no Lakebase option. `bundle deployment bind` needs full resource names. [runs]
 - Bundle resource types listed for Lakebase: projects, branches, endpoints, databases, roles, catalogs, synced tables, and snapshot schedules. Only projects, branches, and endpoints were tested. [docs] [runs]
 - Lakebase support in bundles is labeled Beta. [docs]
@@ -75,6 +78,10 @@ Tags: **[lab]** tested in the lab (dates noted below; current walkthrough in [TE
 - Setup changes are guarded once resources exist. After a session restart, run from the top before changing a box so the helper state exists. [lab]
 - Creating a project took 5 to 6 seconds in every run. Once, the CLI's 18 MB download from GitHub dropped after 64 KB (`IncompleteRead`), so the lab now tries each download three times. [lab]
 - Passed as a service principal in jobs and as a workspace user in an interactive Run all. [lab]
+- Brand-new non-admin service principals with only the entitlements the admin console gives a new user (Workspace access and Databricks SQL access) and only `users` membership passed the preflight and the lab in AWS and Azure on October 13, 2026. Every workspace user can create Lakebase projects by default. [lab] [docs]
+- Whether the optional sync runs for a new user depends on the workspace. In the tested AWS workspace, `account users` had only `USE CATALOG` on `main`, so it skipped; in the tested Azure workspace they had `ALL PRIVILEGES` there, so it ran. [lab]
+- Module 0's **Check this workspace** cell took about 30 seconds and made and deleted its test project in 5 to 9 seconds per workspace. [lab]
+- Serverless reported x86_64 on October 13, 2026, and aarch64 in earlier rounds. [lab]
 - Names: projects `lb-move-old-<slug>-<user id>` and `lb-move-new-<slug>-<user id>`, schema `<catalog>.lb_move_<slug>_<user id>`, secret scope `lb-move-lab-<slug>-<user id>`. The user id keeps two learners whose user names start alike from sharing a schema or scope. [lab]
 - The lab tags its projects `Lakebase move lab: old home` and `Lakebase move lab: new home`. The project link uses the API's UID because a URL with the project name returns `project not found`. [lab]
 - The lab only reuses a project it made in the same session. A same-named project with the lab's tag stops it as a leftover from an earlier run; one without the tag stops it as someone else's. Cleanup deletes only tagged projects. [lab]
@@ -87,6 +94,8 @@ Tags: **[lab]** tested in the lab (dates noted below; current walkthrough in [TE
 ## Two workspaces (the lab's optional mode)
 
 - From AWS serverless, the tested Azure computes needed their public IP through libpq `hostaddr` after the proxy either refused authorization or presented a certificate for the wrong hostname. Both routes keep the original hostname, `verify-full`, and system trust. Only those two signatures enable fallback. Other workspace pairs weren't tested. [lab] [not tested]
+- The other direction needed the same fallback: from Azure serverless, the tested AWS computes were refused by the normal route and answered at their public IP. Both directions passed all 39 cells and 7 switch checks on October 13, 2026. [lab]
+- In the tested Azure workspace, only admins and a few named users could create personal access tokens, so a learner there would need an admin's help for two-workspace mode. [lab]
 - Across workspaces, the cross-project branch and the cross-project snapshot were rejected with the same errors as inside one workspace. [lab]
 - The notebook's bundle deploy, redeploy, and destroy ran against the other workspace, with the CLI signed in through the secret scope's token. [lab]
 - The two workspaces had separate metastores, so the lab skipped the synced table on the new side. Moving a synced table between two workspaces that share a metastore wasn't tested. [lab] [not tested]
@@ -98,6 +107,8 @@ Tags: **[lab]** tested in the lab (dates noted below; current walkthrough in [TE
 ## Not tested
 
 - Large volumes (the runs moved about 200,000 rows, 2.3 MB compressed) and parallel restore.
+- A human non-admin user. The new-user runs used non-admin service principals.
+- Typing a token into the hidden box in the October 13, 2026, round. Its tokens went in with the documented CLI fallback; the last automated hidden-box entry was October 5.
 - Writes during the dump; every run paused writes first.
 - Classic clusters for the lab.
 - The bundle resources for databases, roles, catalogs, synced tables, and snapshot schedules.

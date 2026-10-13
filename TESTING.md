@@ -5,6 +5,66 @@ SPDX-License-Identifier: Apache-2.0
 
 # First-run check
 
+## October 13, 2026: new users, Genie Code, and both directions
+
+Two kinds of first-time run, in AWS and then Azure:
+
+- **A brand-new non-admin identity.** In each workspace, a throwaway service principal got only what the admin console gives a new user: Workspace access and Databricks SQL access, with `users` membership and no admin rights. It installed its own Git folder from GitHub and ran the preflight and lab as one-time serverless jobs. Both were deleted afterward.
+- **Ryan's account in the browser, as a first-time user.** A new Git folder through **Workspace**, **Create**, **Git folder**; the skills added in Genie Code; the preflight asked of Genie Code; then the lab cell by cell with the default answers.
+
+Tested October 13, 2026, in Chicago, with Databricks CLI `1.17.0`. Times are job runtimes; for browser runs, the cells' own run time.
+
+### Published `main` (`29cb40f`)
+
+| Run | Result | Seconds | Run ID |
+|---|---|---|---|
+| AWS, non-admin preflight | Ready with notes: 18 passed; no `CREATE SCHEMA` on `main`, so the sync check skipped | 108.8 | `95073893187511` |
+| AWS, non-admin lab | 39 cells, 7 switch checks, 13 behavior checks; optional sync skipped | 159.5 | `226149309136053` |
+| AWS, Genie Code preflight | Ready with notes, 18 passed. It ran the GitHub copy instead of the Git folder's and said 16 passed | 90.6 | `290761666299688` |
+| AWS, browser, cell by cell | Every step passed except the point-in-time demo, which failed with `INTERNAL_ERROR` twice | 148 | |
+| Azure, non-admin preflight | Ready: 20 passed | 189.0 | `157580070408495` |
+| Azure, non-admin lab | Stopped in Module 3's deploy: `500 INTERNAL_ERROR` creating development, which existed anyway | 205.2 | `885341141926110` |
+| Azure, documented recovery as that identity | 9 setup and cleanup cells passed; all 7 lab resources gone | | `442469070412495` |
+
+A new non-admin user could create projects, deploy the bundle, connect, dump and restore, branch, and snapshot in both workspaces. The optional sync depends on the workspace: AWS gives `account users` only `USE CATALOG` on `main`, while the Azure workspace gives them `ALL PRIVILEGES` there.
+
+### What changed (branch `new-user-checks-and-retries`)
+
+- **Check this workspace.** Module 0's Lakebase probe became a check of everything the lab needs, run before anything is made: serverless, the SDK upgrade, both download sites, Lakebase, a test project created and deleted, leftovers, the catalog, and the other workspace when picked. Each line prints ✅, ⚠️, or ❌ with its fix. It took about 30 seconds.
+- **The deploy that stopped on a 500.** Bundle commands get two more tries on a temporary error, and development uses `replace_existing`, so a retry adopts a branch the failed try made.
+- **The point-in-time demo.** Throwaway branches on the AWS new home reproduced it: every time exactly on a whole minute, 11:25 through 11:31, failed with `INTERNAL_ERROR`, and one second either side worked. The restore time had landed on a minute. The lab and preflight now step one second earlier.
+- **Waiting for a new sync's table.** An Azure preflight gave up after three `relation ... does not exist` errors while the sync was still making its table. The lab's wait had the same rule. Both now keep waiting until the usual timeout.
+- **"Already exists" after a resend.** In Azure, the point-in-time create made its branch, then failed with `branch already exists`: the SDK resends a request when its connection drops. Running the cell again could only fail the same way. Branch and snapshot creates now carry on with the name they just asked for.
+- **Genie Code.** The skill's cell takes `NOTEBOOK_PATH`, the preflight in the user's Git folder, and prints a counts line for Genie Code to quote.
+- **Wording.** The synced-table skip note no longer says to click Run all, and Spark's Java class names stay out of the check lines.
+
+### The branch
+
+| Run | Commit | Result | Seconds | Run ID |
+|---|---|---|---|---|
+| AWS, non-admin preflight | `809d86a` | Ready with notes, 18 passed | 92.5 | `550327873092766` |
+| AWS, non-admin lab | `809d86a` | 39 cells, 7 switch checks, 13 behavior checks | 158.2 | `59280187375619` |
+| Azure, non-admin preflight | `809d86a` | Ready with notes: the sync check gave up on `UndefinedTable`, fixed in `6434fac` | 189.6 | `75091036982012` |
+| Azure, non-admin lab | `809d86a` | 39 cells, 7 switch checks, 13 behavior checks; 50 rows synced on both homes | 341.3 | `4452155336746` |
+| Azure, Genie Code preflight | `6434fac` | Ready, 20 passed; ran the Git folder's copy and quoted the counts | 205.8 | `166989703979907` |
+| Azure, browser, cell by cell | `6434fac` | Passed, but the point-in-time demo got `branch already exists`, fixed in `f6e00fc` | 262 | |
+| AWS to Azure, browser, Run all | `f6e00fc` | 39 cells, 7 switch checks; sync skipped: no `CREATE SCHEMA`, separate metastores | 225 | |
+| Azure to AWS, browser, Run all | `f6e00fc` | 39 cells, 7 switch checks; old-side sync 50 rows, new side skipped for separate metastores | 287 | |
+| AWS, non-admin preflight | `f6e00fc` | Ready with notes, 18 passed | 92.1 | `489340583927780` |
+| AWS, non-admin lab | `f6e00fc` | 39 cells, 7 switch checks, 13 behavior checks | 187.1 | `624921697509902` |
+| Azure, non-admin preflight | `f6e00fc` | Ready, 20 passed | 195.2 | `683015165971262` |
+| Azure, non-admin lab | `f6e00fc` | 39 cells, 7 switch checks, 13 behavior checks; 50 rows synced on both homes | 334.2 | `645908485718542` |
+
+**Azure to AWS was a first.** From Azure serverless, the AWS computes refused the normal route too. The public address worked with the hostname and `verify-full` intact, and the switch's new orders, 5026 through 5030, landed in AWS.
+
+In both two-workspace runs, changing box 1 re-ran **Choose your setup** on its own, and the hidden token box appeared. The tokens went in through the documented CLI fallback, scripted with the SDK: the test browser's upload of a local token file was blocked by a safety policy. So typing into the hidden box wasn't repeated this round; it last passed automated entry on October 5. Setup then signed in to the other workspace from the stored token.
+
+After every run, separate API checks found the exact lab or preflight resources absent, in both workspaces for the two-workspace runs, secret scopes included. The three test tokens were revoked. Both test identities were removed from their workspaces, with their OAuth secrets revoked; in Azure, the account still lists that identity until an account admin deletes it.
+
+**Not covered:** a human non-admin user, typing into the hidden box, and a live retry of a bundle command. The retries and the other fixes are covered by local tests; no deploy needed a retry on the branch.
+
+All 60 repository tests and 45 local file and section links passed. Evidence is under `.tmp/nu/evidence`, with the job logs beside it.
+
 ## October 9, 2026: published-commit retest
 
 Published GitHub commit `6adc527024b103ecd484086d619d00bd0d6f7043` passed fresh single-workspace installs on AWS, then Azure. Both used Databricks CLI `1.17.0`. No notebook changes, job retries, or recovery runs were needed.
@@ -126,6 +186,8 @@ The earlier tests ran October 4 in Chicago, October 5 in UTC. The original insta
 | Run the notebook and keep the old home here, AWS us-west-2 | `https://dbc-7bae415f-6ff0.cloud.databricks.com/` |
 | Put the new home here on the second run, Azure eastus2 | `https://adb-984752964297111.11.azuredatabricks.net/` |
 
+On October 13, 2026, the reverse ran too: the notebook and old home in Azure, the new home in AWS.
+
 The notebook ran on serverless, with environment version 5 requested. The rerun preflight reported environment 5 (`client.5.12`), Python 3.12.3, aarch64, and Ubuntu 24.04.4 LTS. It confirmed Databricks SDK 0.146.0, psycopg 3.3.6, protobuf 5.29.6, Databricks CLI 1.17.0, PostgreSQL client tools 17.9, libpq 18.3, and Lakebase Postgres 17.11.
 
 For the default AWS run, Ryan couldn't create a schema in `main`. The product-data exercise skipped and the rest finished. For the full exercise and the Azure run, we used `cicaktest_catalog`, where Ryan can create a schema.
@@ -220,10 +282,10 @@ The folder also includes the README, preflight, and skills. Local scratch files,
 
 ## Limits
 
-- **Fresh notebooks, existing accounts.** We used Ryan's authenticated workspace accounts, not newly provisioned users. Both accounts had admin membership. This does not prove an ordinary new account's permissions are sufficient.
+- **Fresh notebooks, existing accounts.** We used Ryan's authenticated workspace accounts, not newly provisioned users. Both accounts had admin membership. This does not prove an ordinary new account's permissions are sufficient. On October 13, 2026, brand-new non-admin service principals with a new user's default entitlements passed in both workspaces; a human non-admin user still hasn't run it.
 - **The hidden token input passed automated browser entry.** The helper checked that the field was an `input` of type `password`, submitted a one-hour PAT, and verified that the secret scope held that exact value. The setup cell then confirmed Azure sign-in. The helper didn't put the token value in code, output, or local test files. This was automation, not a human learner manually pasting.
 - **No separate live app or release pipeline.** SQL simulates orders and the write pause. Real projects, bundle commands, dump/restore, roles, and cleanup were exercised.
-- **Small data and one workspace pair.** We did not test large databases, other network policies, other cloud pairs, classic clusters, or a cross-workspace synced-table move.
+- **Small data and one workspace pair.** We did not test large databases, other network policies, other cloud pairs, classic clusters, or a cross-workspace synced-table move. The one pair has now run in both directions.
 - **Mocks have limits.** The helper tests check options, guards, and retries; they don't prove certificate enforcement on a hostile endpoint. The live runs used full TLS verification without disabling it.
 
 Before a workshop, have someone with ordinary, non-admin permissions try the setup and token entry.

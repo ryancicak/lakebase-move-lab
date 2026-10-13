@@ -17,9 +17,11 @@ You need:
 - **Lakebase Postgres** in the grid menu at the top right, plus permission to create projects. If it isn't there, ask your workspace admin before starting.
 - A workspace where you're allowed to create lab resources.
 
-1. **Open it in Databricks.** Go to **Workspace**, then **Create**, then **Git folder**. Paste `https://github.com/ryancicak/lakebase-move-lab`, choose GitHub, and create the folder on branch `main`. Open `lakebase_move_lab`. Databricks recognizes this `.py` file as a notebook.
+1. **Open it in Databricks.** Go to **Workspace**, then **Create**, then **Git folder**. Paste `https://github.com/ryancicak/lakebase-move-lab`; GitHub fills in as the provider. Create the folder on branch `main`. Open `lakebase_move_lab`. Databricks recognizes this `.py` file as a notebook.
 2. **Choose Serverless.** Run the first code cell, **Choose your setup**, and leave its defaults for this first run.
 3. **Go cell by cell.** Use **Shift+Enter** to run a cell and move to the next. Read the short text above it; you can skim the helper code. When the first project appears, open its **See it in Lakebase Postgres** link in another tab. Then come back and continue through cleanup.
+
+Module 0's **Check this workspace** cell tells you in about 30 seconds whether this workspace has what the lab needs: serverless, the two downloads, Lakebase, and permission to create a project. Each line gets ✅, ⚠️, or ❌. Fix each ❌ the way its line says, then run that cell again.
 
 **Run all includes cleanup.** It takes a few minutes and deletes the lab resources at the end. Your notebook and Git folder stay.
 
@@ -33,7 +35,7 @@ Finish the first run and cleanup. Then **import `lakebase_move_lab.py` as a new 
 
 You don't need to edit code or install a CLI on your laptop:
 
-1. In the other workspace, create a short-lived **personal access token** under **Settings**, **Developer**, **Access tokens**. You'll need permission to create Lakebase projects there too.
+1. In the other workspace, create a short-lived **personal access token** under **Settings**, **Developer**, **Access tokens**. You'll need permission to create tokens and Lakebase projects there. Some workspaces let only admins create tokens; if the page is missing, ask an admin.
 2. In the fresh lab notebook, run **Choose your setup** once. Put the other workspace's URL in **box 2 first**, then pick **Another workspace** in box 1. This avoids asking the setup cell to sign in before it has an address.
 3. The setup cell asks for the token in a hidden input **below the cell**. Paste it there, not into the notebook's code or a widget. Once it says you're signed in to the other workspace, continue. Changing a box may run the setup cell automatically; otherwise, run it yourself.
 
@@ -45,7 +47,7 @@ If the workspaces have separate metastores, the lab skips the new home's synced 
 
 `[REDACTED]` is expected for the saved workspace URL. If the connection fails, run preflight with the same setup and check the [error reference](skills/lakebase-move-lab-expert/troubleshooting.md).
 
-For Ryan's AWS-to-Azure pair, use the addresses in [Where we ran it](TESTING.md#where-we-ran-it). Other learners use workspaces they can access.
+Both directions were tested, AWS to Azure and Azure to AWS; the addresses are in [Where we ran it](TESTING.md#where-we-ran-it). Other learners use workspaces they can access.
 
 ## Optional: check a workspace before a workshop
 
@@ -57,12 +59,12 @@ Read **Summary**, not just the job status. If a check fails, follow its fix befo
 
 1. Use the Git folder from the install above. Importing just the lab notebook doesn't include the skills.
 2. Open the Genie Code pane, then its **⋮** menu, then **Customizations**, then **Skills**.
-3. If you've never added a skill, click **Create skills folder** first.
+3. If you've never added a skill, click **Create skills folder** first. In a workspace that already has shared skills, **Add skill** shows without this step.
 4. Click **Add skill**, paste the **workspace** Git folder's `skills` path, then click **Add folder**. For example: `/Users/you@company.com/lakebase-move-lab/skills`. Use the path from the workspace tree, not your laptop.
 
 Start a new chat after adding or changing skills. Ask *"Why is the new development branch empty after the restore?"* for the expert, or *"Check that this workspace is ready for the Lakebase Move Lab"* for preflight. The expert answers questions; preflight can run checks. Genie Code asks before running code unless you've enabled auto-approval.
 
-These UI steps were tested on October 2, 2026.
+These UI steps were tested on October 13, 2026, in AWS and Azure.
 
 ## Reference
 

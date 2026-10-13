@@ -17,7 +17,7 @@
 # MAGIC ## Before you start
 # MAGIC
 # MAGIC * Select **Serverless** in this notebook's compute dropdown. A SQL warehouse is a different kind of compute.
-# MAGIC * Open the grid icon at the top right. You need **Lakebase Postgres** there and permission to create projects. Use a workspace where you're allowed to create lab resources.
+# MAGIC * Open the grid icon at the top right. You need **Lakebase Postgres** there and permission to create projects. Use a workspace where you're allowed to create lab resources. Module 0's **Check this workspace** cell confirms what the lab needs and says exactly what to fix.
 # MAGIC * For your first run, use **Shift+Enter** to run one cell and move to the next. Read the short explanation above each cell; you can skim the helper code. **Run all** also works and takes a few minutes.
 # MAGIC
 # MAGIC **Run all includes cleanup.** To look at a project in Lakebase, open its link when you reach the first checkpoint. Don't change the setup boxes once the lab has started.
@@ -158,21 +158,169 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-# DBTITLE 1,Confirm Lakebase is available here
-"""Fail fast if this workspace can't list Lakebase projects, before the downloads."""
+# MAGIC %md
+# MAGIC ### Check this workspace
+# MAGIC
+# MAGIC Before the lab makes anything, the next cell checks what it needs: serverless compute, the two downloads, Lakebase, and permission to create a project. It creates a small test project and deletes it right away. It takes about 30 seconds.
+# MAGIC
+# MAGIC Each line starts with ✅, ⚠️, or ❌. **Fix each ❌ the way its line says, then run the cell again.** A ⚠️ only means an optional step will skip.
+
+# COMMAND ----------
+
+# DBTITLE 1,Check this workspace (about 30 seconds)
+"""Check what the lab needs before it makes anything, and print exactly what to fix."""
+import os
+import re
+import time
+import urllib.error
+import urllib.request
+
 from databricks.sdk import WorkspaceClient
 
+CHECK_LABEL = "Lakebase move lab: check"  # the throwaway project this cell makes and deletes
+BLOCKERS, LEFTOVERS = [], []  # what stops the lab, and what an earlier run left behind
+
+
+def answer(name, default):
+    """Your answer to a question in Choose your setup, from the boxes at the top (or its default)."""
+    try:
+        return dbutils.widgets.get(name).strip() or default
+    except Exception:
+        return default
+
+
+def report(ok, what, fix="", kind="blocker"):
+    """Print one check. A failed blocker or leftover gets ❌; a warning gets ⚠️ and only skips an optional step."""
+    if ok:
+        print("✅ " + what)
+        return True
+    print(("⚠️ " if kind == "warning" else "❌ ") + what + (f"\n   Fix: {fix}" if fix else ""))
+    {"blocker": BLOCKERS, "leftover": LEFTOVERS}.get(kind, []).append(what)
+    return False
+
+
+def brief(e, with_type=True):
+    """An error as one short line, without Spark's JVM stack trace or its Java class name."""
+    text = re.sub(r"^\([\w.$]+\)\s*", "", " ".join(str(e).split("JVM stacktrace")[0].split()))[:200]
+    return f"{type(e).__name__}: {text}" if with_type else text
+
+
+def reachable(url):
+    """True if this compute gets any HTTP answer from the site."""
+    try:
+        urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=15)
+    except urllib.error.HTTPError:
+        pass  # the site answered, so the network path is open
+    except Exception:
+        return False
+    return True
+
+
+def check_lakebase(ws, where, labs):
+    """Lakebase answers, nothing is left from an earlier run, and you can create a project there."""
+    from databricks.sdk.service.postgres import Project, ProjectSpec
+    try:
+        projects = {p.name.split("/", 1)[1]: p.status.display_name for p in ws.postgres.list_projects()}
+    except Exception as e:
+        return report(False, f"Lakebase in {where}: {brief(e)}",
+                      "Open the grid icon at the top right and look for Lakebase Postgres. If it's missing, ask "
+                      "your workspace admin to turn on Lakebase for this workspace and give you access.")
+    report(True, f"Lakebase in {where} ({len(projects)} project(s) visible to you)")
+    for pid, label in labs:
+        if pid in projects and projects[pid] == label:
+            report(False, f"Project {pid} in {where} is left over from an earlier run of this lab",
+                   "Run the rest of Module 0, skip Modules 1 to 6, and run Module 7's two cells. Then start "
+                   "Module 1. Don't click Run all until it's cleaned up.", kind="leftover")
+        elif pid in projects:
+            report(False, f"A project named {pid} in {where} exists, and this lab didn't make it "
+                          f"(it's called {projects[pid]!r})", "Delete or rename it, then run this cell again.")
+    test_id, started = f"lb-move-chk-{slug}-{me.id}", time.time()
+    try:
+        if projects.get(test_id) == CHECK_LABEL:  # an interrupted check left it behind
+            ws.postgres.delete_project(name=f"projects/{test_id}", purge=True).wait()
+        ws.postgres.create_project(project=Project(spec=ProjectSpec(display_name=CHECK_LABEL, pg_version=17)),
+                                   project_id=test_id).wait()
+    except Exception as e:
+        denied = "PERMISSION_DENIED" in str(e) or type(e).__name__ == "PermissionDenied"
+        return report(False, f"Create a Lakebase project in {where}: {brief(e)}",
+                      "Ask your workspace admin for permission to create Lakebase projects. By default, every "
+                      "workspace user has it." if denied else
+                      "Run this cell again. If it fails the same way, send this line to the lab's owner.")
+    try:
+        ws.postgres.delete_project(name=f"projects/{test_id}", purge=True).wait()
+    except Exception as e:
+        report(False, f"Couldn't delete the test project {test_id} in {where}: {brief(e)}",
+               "Delete it in Lakebase Postgres. The lab doesn't need it.", kind="warning")
+    return report(True, f"Create a Lakebase project in {where} (made a test project and deleted it in "
+                        f"{time.time() - started:.0f} s)")
+
+
+w = WorkspaceClient()
+me = w.current_user.me()
+slug = re.sub(r"[^a-z0-9]+", "-", me.user_name.split("@")[0].lower()).strip("-")[:16].rstrip("-") or "user"
+elsewhere, catalog = answer("where", "") == "Another workspace", answer("catalog", "main")
+labels = {f"lb-move-old-{slug}-{me.id}": "Lakebase move lab: old home",
+          f"lb-move-new-{slug}-{me.id}": "Lakebase move lab: new home"}
+
+runtime = os.environ.get("DATABRICKS_RUNTIME_VERSION", "")
+report(os.environ.get("IS_SERVERLESS", "").lower() in ("true", "1") or runtime.startswith("client."),
+       f"Serverless compute ({runtime or 'unknown runtime'})",
+       "Pick Serverless in the compute dropdown at the top right. The lab was tested only on serverless.",
+       kind="warning")
+if not report(hasattr(w, "postgres"), "Databricks SDK with the Lakebase API",
+              "Run the %pip cell and the restart cell above, then this cell. If the %pip cell fails, ask your "
+              "workspace admin to let serverless compute reach PyPI (pypi.org)."):
+    raise RuntimeError("Not ready: fix the item marked ❌ above, then run this cell again.")
+for site, url, use in (("apt.postgresql.org", "https://apt.postgresql.org/pub/repos/apt/", "pg_dump and pg_restore"),
+                       ("github.com", "https://github.com/databricks/cli/releases", "the Databricks CLI")):
+    report(reachable(url), f"Download site for {use}: {site}",
+           f"Ask your workspace admin to let serverless compute reach {site} over HTTPS.")
+
+check_lakebase(w, "this workspace", list(labels.items()) if not elsewhere else
+               [(pid, label) for pid, label in labels.items() if "-old-" in pid])
+w_other = None
+if elsewhere:
+    scope = f"lb-move-lab-{slug}-{me.id}"
+    try:
+        keys = {s.key for s in w.secrets.list_secrets(scope=scope)}
+        secret = lambda key: dbutils.secrets.get(scope, key)
+        w_other = (WorkspaceClient(host=secret("host"), client_id=secret("client-id"),
+                                   client_secret=secret("client-secret"), auth_type="oauth-m2m")
+                   if "client-id" in keys else
+                   WorkspaceClient(host=secret("host"), token=secret("token"), auth_type="pat"))
+        report(True, f"Signed in to the other workspace as {w_other.current_user.me().user_name}")
+    except Exception as e:
+        w_other = None
+        report(False, f"Sign in to the other workspace: {brief(e)}",
+               "Run Choose your setup, the first code cell, again: put the other workspace's URL in box 2, pick "
+               "Another workspace in box 1, and paste a fresh personal access token in the hidden box below it.")
+    if w_other is not None:
+        check_lakebase(w_other, "the other workspace", [(pid, label) for pid, label in labels.items() if "-new-" in pid])
+        report(any(reachable(url) for url in ("https://dns.google", "https://cloudflare-dns.com")),
+               "Public DNS for the other workspace's computes (dns.google or cloudflare-dns.com)",
+               "Only needed if the normal route to the other workspace's computes is refused. Ask your workspace "
+               "admin to let serverless compute reach dns.google or cloudflare-dns.com over HTTPS.", kind="warning")
+
+uc_schema = f"lb_move_{slug.replace('-', '_')}_{me.id}"
 try:
-    _probe = WorkspaceClient()
-    _visible = sum(1 for _ in _probe.postgres.list_projects())
+    if not spark.sql(f"SHOW SCHEMAS IN {catalog} LIKE '{uc_schema}'").count():
+        spark.sql(f"CREATE SCHEMA {catalog}.{uc_schema}")
+        spark.sql(f"DROP SCHEMA {catalog}.{uc_schema} CASCADE")
+    report(True, f"Catalog {catalog} for the optional synced table")
 except Exception as e:
-    raise RuntimeError(
-        "This workspace doesn't look like it can use Lakebase yet. Open the product switcher (grid, top right) "
-        "and check for Lakebase Postgres. If it's missing, or you don't have permission to create projects, "
-        "stop here. Later cells will fail the same way. "
-        f"({type(e).__name__}: {' '.join(str(e).split())[:200]})"
-    ) from None
-print(f"Lakebase API answered as {_probe.current_user.me().user_name} ({_visible} project(s) visible).")
+    missing = any(s in str(e) for s in ("NO_SUCH_CATALOG", "CATALOG_NOT_FOUND"))
+    report(False, f"Catalog {catalog} for the optional synced table: {brief(e, with_type=False)}",
+           "Put the name of a catalog you can use in box 3." if missing else
+           f"To include it, put a catalog where you can create a schema in box 3, or ask your admin for USE CATALOG "
+           f"and CREATE SCHEMA on {catalog}. The rest of the lab doesn't need it.", kind="warning")
+if w_other is not None and w.metastores.current().metastore_id != w_other.metastores.current().metastore_id:
+    report(False, "The other workspace has its own metastore, so the lab skips the synced table on the new side",
+           kind="warning")
+
+if BLOCKERS:
+    raise RuntimeError(f"Not ready: fix the {len(BLOCKERS)} item(s) marked ❌ above, then run this cell again.")
+print("\nClean up first: run the rest of Module 0, skip Modules 1 to 6, and run Module 7's two cells."
+      if LEFTOVERS else "\nReady. Go on to the next cell.")
 
 # COMMAND ----------
 
@@ -439,11 +587,12 @@ if DO_SYNCED_TABLES:
             spark.sql(f"DROP SCHEMA {LAB_SCHEMA} CASCADE")
         print(f"Synced-table steps will use catalog {CATALOG}.")
     except Exception as e:
-        reason = " ".join(str(e).split("JVM stacktrace")[0].split())
+        reason = re.sub(r"^\([\w.$]+\)\s*", "", " ".join(str(e).split("JVM stacktrace")[0].split()))
         if any(s in reason for s in ("PERMISSION_DENIED", "NO_SUCH_CATALOG", "CATALOG_NOT_FOUND")):
             DO_SYNCED_TABLES = False
             print(f"Synced-table steps will skip: {reason[:220]}")
-            print("The rest of the lab still runs. To include them, put a catalog you own in box 3, then click Run all.")
+            print("The rest of the lab still runs. To include them, put a catalog where you can create a schema in "
+                  "box 3 before Module 1's Step 6. In a Run all, click Run all again once it finishes.")
         else:
             print("Couldn't probe the catalog for synced tables yet:", reason[:220])
 
@@ -517,11 +666,15 @@ def create_branch(pid, branch, source="production"):
     except Exception as e:
         if "RESOURCE_DOES_NOT_EXIST" not in str(e) and "NOT_FOUND" not in str(e).upper():
             raise
-    client(pid).postgres.create_branch(
-        parent=project_path(pid),
-        branch=Branch(spec=BranchSpec(source_branch=branch_path(pid, source), no_expiry=True)),
-        branch_id=branch,
-    ).wait()
+    try:
+        client(pid).postgres.create_branch(
+            parent=project_path(pid),
+            branch=Branch(spec=BranchSpec(source_branch=branch_path(pid, source), no_expiry=True)),
+            branch_id=branch,
+        ).wait()
+    except Exception as e:
+        if "already exists" not in str(e):  # the SDK resends a request whose connection dropped
+            raise
     print(f"Created branch {branch} from {source} in {pid}")
 
 
@@ -642,18 +795,31 @@ def run_pg(tool, pid, branch, args, dbname=DB):
     return result.returncode, round(time.time() - started, 1), result.stderr.strip()
 
 
+# Errors that Databricks says to retry: a 500 that asks you to try again later, or a stalled request.
+TEMPORARY = ("INTERNAL_ERROR", "TEMPORARILY_UNAVAILABLE", "try again later", "timed out")
+
+
 def cli(*args, cwd=BUNDLE_DIR):
-    """Run the Databricks CLI as you, against the new home's workspace. Its token is never printed."""
-    auth = w_new.config.authenticate().get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise RuntimeError("Couldn't get a token for the CLI from this notebook's sign-in")
-    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(CLI_DIR),
-           "DATABRICKS_HOST": w_new.config.host, "DATABRICKS_TOKEN": auth.split(" ", 1)[1]}
-    # Azure workspace-file calls stalled with the CLI's default transport in lab tests.
-    if (urlsplit(w_new.config.host).hostname or "").endswith(".azuredatabricks.net"):
-        env["GODEBUG"] = "http2client=0"
-    result = subprocess.run([str(CLI), *args], env=env, cwd=cwd, capture_output=True, text=True, timeout=900)
-    return result.returncode, (result.stdout + result.stderr).strip()
+    """Run the Databricks CLI as you, against the new home's workspace. Its token is never printed.
+
+    A command that stops on a temporary error gets two more tries. A deploy picks up where the last one stopped.
+    """
+    for attempt in range(3):
+        auth = w_new.config.authenticate().get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            raise RuntimeError("Couldn't get a token for the CLI from this notebook's sign-in")
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": str(CLI_DIR),
+               "DATABRICKS_HOST": w_new.config.host, "DATABRICKS_TOKEN": auth.split(" ", 1)[1]}
+        # Azure workspace-file calls stalled with the CLI's default transport in lab tests.
+        if (urlsplit(w_new.config.host).hostname or "").endswith(".azuredatabricks.net"):
+            env["GODEBUG"] = "http2client=0"
+        result = subprocess.run([str(CLI), *args], env=env, cwd=cwd, capture_output=True, text=True, timeout=900)
+        out = (result.stdout + result.stderr).strip()
+        if result.returncode == 0 or attempt == 2 or not any(s in out for s in TEMPORARY):
+            return result.returncode, out
+        error = next((l for l in out.splitlines() if l.startswith("Error:")), out.splitlines()[-1] if out else "")
+        print(f"(databricks {' '.join(args)} hit a temporary error, so the lab tries again in 15 s: {error[:200]})")
+        time.sleep(15)
 
 
 def fingerprint(pid, branch, dbname=DB, schema="app"):
@@ -916,10 +1082,11 @@ def wait_for_sync(pid, synced_name, pg_table, expected_rows, timeout=900):
         try:
             rows = query(pid, "production", f"SELECT count(*) AS n FROM {pg_table}")["n"][0]
             failures = 0
-        except Exception:
-            failures += 1
-            if failures >= 3:
-                raise
+        except Exception as e:
+            if type(e).__name__ != "UndefinedTable":  # the sync makes its table after the create call returns
+                failures += 1
+                if failures >= 3:
+                    raise
             rows = 0
         if "FAILED" in state:
             raise RuntimeError(f"{synced_name} failed to sync: state {state}, {rows} rows")
@@ -1078,6 +1245,7 @@ resources:
       branch_id: development
       source_branch: ${{resources.postgres_branches.production.id}}
       no_expiry: true                               # every branch you add needs an expiry setting
+      replace_existing: true                        # a retried deploy adopts it if a failed one already made it
 
   postgres_endpoints:
     development_primary:
@@ -1622,13 +1790,20 @@ except NameError:
     raise RuntimeError("This session has no record of when the restore started: it hasn't run yet, or it ran before "
                        "the notebook restarted. Run the restore cell in Module 4, or run Module 7 and start over.")
 
-client(NEW_ID).postgres.create_branch(
-    parent=project_path(NEW_ID),
-    branch=Branch(spec=BranchSpec(source_branch=branch_path(NEW_ID, "production"),
-                                  source_branch_time=Timestamp(seconds=int(RESTORE_STARTED.timestamp())),
-                                  ttl=Duration(seconds=86400))),
-    branch_id="before-the-move",
-).wait()
+moment = int(RESTORE_STARTED.timestamp())
+if moment % 60 == 0:  # Lakebase failed every point-in-time on a whole minute with INTERNAL_ERROR in testing
+    moment -= 1       # one second earlier is still before the restore
+try:
+    client(NEW_ID).postgres.create_branch(
+        parent=project_path(NEW_ID),
+        branch=Branch(spec=BranchSpec(source_branch=branch_path(NEW_ID, "production"),
+                                      source_branch_time=Timestamp(seconds=moment),
+                                      ttl=Duration(seconds=86400))),
+        branch_id="before-the-move",
+    ).wait()
+except Exception as e:
+    if "already exists" not in str(e):  # the SDK resends a request whose connection dropped; the first one made it
+        raise
 try:
     show(query(NEW_ID, "before-the-move", "SELECT to_regclass('app.orders') IS NOT NULL AS has_app_tables"))
 finally:
@@ -1655,7 +1830,9 @@ try:
                 snapshot_id="before-the-move",
             ).wait()
             break
-        except Exception:
+        except Exception as e:
+            if "already exists" in str(e):  # an earlier try made it before its answer was lost
+                break
             if attempt == 2:
                 raise
             time.sleep(15)

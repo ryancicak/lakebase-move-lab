@@ -361,19 +361,30 @@ def _():
     return subprocess.run([str(CLI), "--version"], capture_output=True, text=True, check=True).stdout.strip()
 
 
+# Errors that Databricks says to retry: a 500 that asks you to try again later, or a stalled request.
+TEMPORARY = ("INTERNAL_ERROR", "TEMPORARILY_UNAVAILABLE", "try again later", "timed out")
+
+
 def cli(*args, cwd=None, ws=None):
-    """Run the Databricks CLI as you, in this workspace or the one ws signs in to. Its token is never printed."""
+    """Run the Databricks CLI as you, in this workspace or the one ws signs in to. Its token is never printed.
+
+    A command that stops on a temporary error gets two more tries, as in the lab.
+    """
     ws = ws or w
-    auth = ws.config.authenticate().get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise RuntimeError("couldn't get a token for the CLI from this notebook's sign-in")
-    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(CLI_DIR),
-           "DATABRICKS_HOST": ws.config.host, "DATABRICKS_TOKEN": auth.split(" ", 1)[1]}
-    # Azure workspace-file calls stalled with the CLI's default transport in lab tests.
-    if (urlsplit(ws.config.host).hostname or "").endswith(".azuredatabricks.net"):
-        env["GODEBUG"] = "http2client=0"
-    result = subprocess.run([str(CLI), *args], env=env, cwd=cwd, capture_output=True, text=True, timeout=900)
-    return result.returncode, (result.stdout + result.stderr).strip()
+    for attempt in range(3):
+        auth = ws.config.authenticate().get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            raise RuntimeError("couldn't get a token for the CLI from this notebook's sign-in")
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": str(CLI_DIR),
+               "DATABRICKS_HOST": ws.config.host, "DATABRICKS_TOKEN": auth.split(" ", 1)[1]}
+        # Azure workspace-file calls stalled with the CLI's default transport in lab tests.
+        if (urlsplit(ws.config.host).hostname or "").endswith(".azuredatabricks.net"):
+            env["GODEBUG"] = "http2client=0"
+        result = subprocess.run([str(CLI), *args], env=env, cwd=cwd, capture_output=True, text=True, timeout=900)
+        out = (result.stdout + result.stderr).strip()
+        if result.returncode == 0 or attempt == 2 or not any(s in out for s in TEMPORARY):
+            return result.returncode, out
+        time.sleep(15)
 
 
 @check("CLI signs in as you", "Copy this check's detail and open an issue at https://github.com/ryancicak/lakebase-move-lab/issues.",
@@ -545,6 +556,7 @@ resources:
       branch_id: development
       source_branch: ${{resources.postgres_branches.production.id}}
       no_expiry: true
+      replace_existing: true
 
   postgres_endpoints:
     development_primary:
@@ -752,12 +764,19 @@ def _():
 def _():
     when = max(time.time() - 3, DEPLOYED_AT + 2)  # a moment the project's history covers
     time.sleep(max(0.0, when + 2 - time.time()))
-    w.postgres.create_branch(
-        parent=f"projects/{PRE_ID}",
-        branch=Branch(spec=BranchSpec(source_branch=f"projects/{PRE_ID}/branches/production",
-                                      source_branch_time=Timestamp(seconds=int(when)), ttl=Duration(seconds=3600))),
-        branch_id="preflight-pitr",
-    ).wait()
+    moment = int(when)
+    if moment % 60 == 0:  # Lakebase failed every point-in-time on a whole minute with INTERNAL_ERROR in testing
+        moment -= 1
+    try:
+        w.postgres.create_branch(
+            parent=f"projects/{PRE_ID}",
+            branch=Branch(spec=BranchSpec(source_branch=f"projects/{PRE_ID}/branches/production",
+                                          source_branch_time=Timestamp(seconds=moment), ttl=Duration(seconds=3600))),
+            branch_id="preflight-pitr",
+        ).wait()
+    except Exception as e:
+        if "already exists" not in str(e):  # the SDK resends a request whose connection dropped, as in the lab
+            raise
     try:
         with connect("preflight-pitr") as conn:
             conn.execute("SELECT 1")
@@ -779,6 +798,8 @@ def _():
             ).wait()
             break
         except Exception as e:
+            if "already exists" in str(e):  # an earlier try made it before its answer was lost
+                break
             if attempt == 2:
                 raise Warn(f"couldn't create a snapshot in 3 tries ({brief(e, 150)}); "
                            "if that happens in the lab, it skips its snapshot demo")
@@ -999,10 +1020,11 @@ def _():
                 with connect("production") as conn:
                     rows = conn.execute(f"SELECT count(*) FROM {pg_table}").fetchone()[0]
                 failures = 0
-            except Exception:
-                failures += 1
-                if failures >= 3:
-                    raise
+            except Exception as e:
+                if type(e).__name__ != "UndefinedTable":  # the sync makes its table after the create call returns
+                    failures += 1
+                    if failures >= 3:
+                        raise
                 rows = 0
             if "FAILED" in state:
                 raise RuntimeError(f"the sync failed: state {state}, {rows} rows")
