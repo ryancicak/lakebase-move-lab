@@ -45,6 +45,8 @@ The saved host must match box 2 before either notebook uses its credentials. The
 
 If a run stops, follow **Module 7: Clean up** in the notebook. If Python restarted, that means running through Module 0 first, skipping Modules 1 through 6, then running Module 7. Don't click Run all while earlier projects remain.
 
+Module 0's **Check this workspace** cell reports an earlier run's projects as leftovers and points to Module 7, without stopping, so the rest of Module 0 can still run for cleanup. It stops on anything that would make the lab fail: no Lakebase, no permission to create a project, a blocked download site, an old SDK, or no sign-in to the other workspace. Its test project, `lb-move-chk-<you>-<your user id>`, is deleted before the cell ends; if the cell is interrupted, running it again deletes that project first.
+
 After cleanup, start from Module 1 in the same session, or from the top in a new session. Cleanup is safe to repeat: with nothing left, it creates nothing and deletes nothing.
 
 Most setup, migration, dump, filter, restore, access, and dev-work cells can be retried in the same session. Restore skips a database whose app tables already exist and keeps the original restore timestamp. These cells are different:
