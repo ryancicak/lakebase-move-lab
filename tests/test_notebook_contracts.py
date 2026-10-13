@@ -50,7 +50,8 @@ class NotebookSyntaxTests(unittest.TestCase):
 
 
 class CliTransportTests(unittest.TestCase):
-    def run_cli(self, notebook, host, source_host=AWS, authorization="Bearer notebook-token", returncode=0):
+    def run_cli(self, notebook, host, source_host=AWS, authorization="Bearer notebook-token", returncode=0,
+                extra=None):
         client = lambda address: types.SimpleNamespace(config=types.SimpleNamespace(
             host=address, authenticate=lambda: {"Authorization": authorization}))
         process = MagicMock()
@@ -66,6 +67,8 @@ class CliTransportTests(unittest.TestCase):
                 "DATABRICKS_INSECURE_SKIP_VERIFY": "true",
             }),
             "subprocess": process,
+            "TEMPORARY": ("INTERNAL_ERROR", "TEMPORARILY_UNAVAILABLE", "try again later", "timed out"),
+            **(extra or {}),
         }
         invoke = load_function(notebook, "cli", namespace)
         kwargs = {"cwd": Path("/test/bundle")}
@@ -122,6 +125,53 @@ class CliTransportTests(unittest.TestCase):
                 process, invoke = self.run_cli(notebook, AZURE, returncode=1)
                 self.assertEqual(invoke(), (1, "command output\ncommand detail"))
                 process.run.assert_called_once()
+
+    def run_with_results(self, notebook, results):
+        clock = MagicMock()
+        process, invoke = self.run_cli(notebook, AWS, extra={"time": clock})
+        process.run.side_effect = [types.SimpleNamespace(returncode=code, stdout=out, stderr="")
+                                   for code, out in results]
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = invoke()
+        return process, clock, result
+
+    def test_retry_markers_match_the_notebooks(self):
+        for notebook in NOTEBOOKS:
+            with self.subTest(notebook=notebook):
+                tree = ast.parse(source(notebook))
+                value = next(node.value for node in tree.body if isinstance(node, ast.Assign)
+                             and any(isinstance(t, ast.Name) and t.id == "TEMPORARY" for t in node.targets))
+                self.assertEqual(ast.literal_eval(value),
+                                 ("INTERNAL_ERROR", "TEMPORARILY_UNAVAILABLE", "try again later", "timed out"))
+
+    def test_temporary_error_gets_two_more_tries(self):
+        failure = ("Error: cannot create resources.postgres_branches.development: The request could not be "
+                   "processed. Please try again later ... (500 INTERNAL_ERROR)")
+        for notebook in NOTEBOOKS:
+            with self.subTest(notebook=notebook):
+                process, clock, result = self.run_with_results(notebook, [(1, failure), (0, "Deployment complete!")])
+                self.assertEqual(result, (0, "Deployment complete!"))
+                self.assertEqual(process.run.call_count, 2)
+                clock.sleep.assert_called_once_with(15)
+
+    def test_temporary_errors_stop_after_three_tries(self):
+        for notebook in NOTEBOOKS:
+            with self.subTest(notebook=notebook):
+                process, clock, result = self.run_with_results(
+                    notebook, [(1, "Error: request timed out after 1m30s of inactivity")] * 3)
+                self.assertEqual(result[0], 1)
+                self.assertEqual(process.run.call_count, 3)
+                self.assertEqual(clock.sleep.call_count, 2)
+
+    def test_destroy_guard_refusal_is_not_retried(self):
+        guard = ("Error: resources.postgres_projects.app has lifecycle.prevent_destroy set, but the plan calls "
+                 "for this resource to be recreated or destroyed.")
+        for notebook in NOTEBOOKS:
+            with self.subTest(notebook=notebook):
+                process, clock, result = self.run_with_results(notebook, [(1, guard)])
+                self.assertEqual(result, (1, guard))
+                process.run.assert_called_once()
+                clock.sleep.assert_not_called()
 
     def test_missing_bearer_token_fails_before_starting_cli(self):
         for notebook in NOTEBOOKS:
@@ -606,6 +656,187 @@ class TlsTests(unittest.TestCase):
                 self.assertEqual(env["PGSSLMODE"], "verify-full")
                 self.assertEqual(env["PGSSLROOTCERT"], "system")
                 self.assertEqual(env["PGPASSWORD"], "test-token")
+
+
+class BundleFileTests(unittest.TestCase):
+    def bundle_text(self, notebook, folder):
+        workspace = types.SimpleNamespace(config=types.SimpleNamespace(host=AWS))
+        namespace = {"BUNDLE_NAME": "lb-move-lab", "PRE_BUNDLE": "lb-move-lab-preflight-1", "w_new": workspace,
+                     "w": workspace, "NEW_ID": "lb-move-new-sam-42", "PRE_ID": "lb-move-pre-sam-42-1",
+                     "NEW_LABEL": "Lakebase move lab: new home", "PG_VERSION": 17, "BUNDLE_DIR": folder}
+        load_function(notebook, "write_bundle", namespace)(guard=True)
+        return (folder / "databricks.yml").read_text()
+
+    def test_a_retried_deploy_can_adopt_the_development_branch(self):
+        import tempfile
+        for notebook in NOTEBOOKS:
+            with self.subTest(notebook=notebook), tempfile.TemporaryDirectory() as folder:
+                text = self.bundle_text(notebook, Path(folder))
+                block = text.split("    development:\n", 1)[1].split("\n\n", 1)[0]
+                self.assertIn("replace_existing: true", block)
+                self.assertIn("no_expiry: true", block)
+
+
+class Recorder:
+    """Stands in for an SDK dataclass and remembers its arguments."""
+
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class PointInTimeTests(unittest.TestCase):
+    WHOLE_MINUTE = 1791909960  # 2026-10-13 16:46:00 UTC
+
+    def lab_moment(self, seconds):
+        from datetime import datetime, timezone
+        cell = next(cell for cell in source(NOTEBOOKS[0]).split("# COMMAND ----------")
+                    if "# DBTITLE 1,Try to restore the new home to before the move" in cell)
+        projects = MagicMock()
+        namespace = {"RESTORE_STARTED": datetime.fromtimestamp(seconds, timezone.utc), "NEW_ID": "new",
+                     "client": lambda pid: projects, "project_path": lambda pid: f"projects/{pid}",
+                     "branch_path": lambda pid, branch: f"projects/{pid}/branches/{branch}",
+                     "Branch": Recorder, "BranchSpec": Recorder, "Timestamp": Recorder, "Duration": Recorder,
+                     "show": MagicMock(), "query": MagicMock()}
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(cell, NOTEBOOKS[0], "exec"), namespace)
+        return projects.postgres.create_branch.call_args.kwargs["branch"].spec.source_branch_time.seconds
+
+    def test_lab_avoids_a_whole_minute(self):
+        self.assertEqual(self.lab_moment(self.WHOLE_MINUTE), self.WHOLE_MINUTE - 1)
+        self.assertEqual(self.lab_moment(self.WHOLE_MINUTE + 7), self.WHOLE_MINUTE + 7)
+
+    def preflight_moment(self, now):
+        tree = ast.parse(source(NOTEBOOKS[1]))
+        function = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                        and any(isinstance(decorator, ast.Call) and isinstance(decorator.args[0], ast.Constant)
+                                and decorator.args[0].value == "Point-in-time branch"
+                                for decorator in node.decorator_list))
+        function.decorator_list = []
+        workspace = MagicMock()
+        namespace = {"time": types.SimpleNamespace(time=lambda: now, sleep=lambda seconds: None),
+                     "DEPLOYED_AT": now - 600, "w": workspace, "PRE_ID": "pre", "connect": MagicMock(),
+                     "Branch": Recorder, "BranchSpec": Recorder, "Timestamp": Recorder, "Duration": Recorder}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
+                     NOTEBOOKS[1], "exec"), namespace)
+        namespace["_"]()
+        return workspace.postgres.create_branch.call_args.kwargs["branch"].spec.source_branch_time.seconds
+
+    def test_preflight_avoids_a_whole_minute(self):
+        self.assertEqual(self.preflight_moment(self.WHOLE_MINUTE + 3), self.WHOLE_MINUTE - 1)
+        self.assertEqual(self.preflight_moment(self.WHOLE_MINUTE + 10), self.WHOLE_MINUTE + 7)
+
+
+class WorkspaceCheckTests(unittest.TestCase):
+    """The lab's Check this workspace cell, with every cloud call mocked."""
+
+    def workspace(self, projects=(), create_error=None, has_postgres=True):
+        workspace = MagicMock()
+        workspace.current_user.me.return_value = types.SimpleNamespace(user_name="sam.learner@example.com", id="42")
+        workspace.postgres.list_projects.return_value = [
+            types.SimpleNamespace(name=f"projects/{pid}", status=types.SimpleNamespace(display_name=label))
+            for pid, label in projects]
+        if create_error:
+            workspace.postgres.create_project.side_effect = create_error
+        workspace.metastores.current.return_value = types.SimpleNamespace(metastore_id="one")
+        if not has_postgres:
+            return types.SimpleNamespace(current_user=workspace.current_user)
+        return workspace
+
+    def run_check(self, workspace, values=None, other=None, reachable=True, catalog_error=None, secrets=None):
+        values = {"where": "This workspace", "other_url": "", "catalog": "main", **(values or {})}
+        sdk = types.ModuleType("databricks.sdk")
+        sdk.WorkspaceClient = MagicMock(side_effect=lambda **kwargs: other if kwargs else workspace)
+        postgres = types.ModuleType("databricks.sdk.service.postgres")
+        postgres.Project, postgres.ProjectSpec = Recorder, Recorder
+        spark = MagicMock()
+        spark.sql.return_value.count.return_value = 0
+        if catalog_error:
+            spark.sql.side_effect = catalog_error
+        dbutils = types.SimpleNamespace(widgets=FakeWidgets(values), secrets=types.SimpleNamespace(
+            get=lambda scope, key: (secrets or {})[key]))
+        cell = next(cell for cell in source(NOTEBOOKS[0]).split("# COMMAND ----------")
+                    if "# DBTITLE 1,Check this workspace" in cell)
+        namespace = {"dbutils": dbutils, "spark": spark}
+        opened = MagicMock() if reachable else MagicMock(side_effect=OSError("no route to host"))
+        output, error = io.StringIO(), None
+        with patch.dict(sys.modules, {"databricks.sdk": sdk, "databricks.sdk.service.postgres": postgres}), \
+                patch.dict("os.environ", {"IS_SERVERLESS": "TRUE", "DATABRICKS_RUNTIME_VERSION": "client.5.12"}), \
+                patch("urllib.request.urlopen", opened), contextlib.redirect_stdout(output):
+            try:
+                exec(compile(cell, NOTEBOOKS[0], "exec"), namespace)
+            except RuntimeError as caught:
+                error = caught
+        return output.getvalue(), error
+
+    def test_a_ready_workspace_creates_and_deletes_one_test_project(self):
+        workspace = self.workspace()
+        output, error = self.run_check(workspace)
+        self.assertIsNone(error)
+        self.assertIn("Ready. Go on to the next cell.", output)
+        self.assertNotIn("❌", output)
+        self.assertEqual(workspace.postgres.create_project.call_args.kwargs["project_id"], "lb-move-chk-sam-learner-42")
+        workspace.postgres.delete_project.assert_called_once_with(
+            name="projects/lb-move-chk-sam-learner-42", purge=True)
+
+    def test_no_permission_to_create_projects_stops_with_the_fix(self):
+        error_type = type("PermissionDenied", (Exception,), {})
+        output, error = self.run_check(self.workspace(create_error=error_type("PERMISSION_DENIED: not allowed")))
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn("Not ready", str(error))
+        self.assertIn("Ask your workspace admin for permission to create Lakebase projects", output)
+
+    def test_blocked_downloads_stop_with_the_fix(self):
+        output, error = self.run_check(self.workspace(), reachable=False)
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn("reach apt.postgresql.org over HTTPS", output)
+        self.assertIn("reach github.com over HTTPS", output)
+
+    def test_an_old_sdk_stops_before_anything_else(self):
+        output, error = self.run_check(self.workspace(has_postgres=False))
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn("Run the %pip cell and the restart cell", output)
+
+    def test_leftovers_point_to_module_7_without_stopping_the_cleanup_path(self):
+        workspace = self.workspace(projects=[("lb-move-old-sam-learner-42", "Lakebase move lab: old home")])
+        output, error = self.run_check(workspace)
+        self.assertIsNone(error)
+        self.assertIn("left over from an earlier run", output)
+        self.assertIn("Clean up first", output)
+
+    def test_someone_elses_project_with_the_lab_name_stops(self):
+        workspace = self.workspace(projects=[("lb-move-new-sam-learner-42", "Production orders")])
+        output, error = self.run_check(workspace)
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn("this lab didn't make it", output)
+
+    def test_no_create_schema_is_only_a_warning(self):
+        output, error = self.run_check(self.workspace(), catalog_error=Exception(
+            "(com.databricks.sql.managedcatalog.acl.UnauthorizedAccessException) PERMISSION_DENIED: User does not "
+            "have CREATE SCHEMA on Catalog 'main'."))
+        self.assertIsNone(error)
+        self.assertIn("⚠️ Catalog main", output)
+        self.assertNotIn("com.databricks", output)
+        self.assertIn("Ready. Go on to the next cell.", output)
+
+    def test_other_workspace_sign_in_failure_stops_with_the_fix(self):
+        workspace = self.workspace()
+        workspace.secrets.list_secrets.return_value = [types.SimpleNamespace(key="host")]
+        output, error = self.run_check(workspace, values={"where": "Another workspace", "other_url": AZURE},
+                                       secrets={"host": AZURE})
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn("paste a fresh personal access token", output)
+
+    def test_other_workspace_is_checked_too(self):
+        workspace, other = self.workspace(), self.workspace()
+        other.metastores.current.return_value = types.SimpleNamespace(metastore_id="two")
+        workspace.secrets.list_secrets.return_value = [types.SimpleNamespace(key=k) for k in ("host", "token")]
+        output, error = self.run_check(workspace, values={"where": "Another workspace", "other_url": AZURE},
+                                       other=other, secrets={"host": AZURE, "token": "test-token"})
+        self.assertIsNone(error)
+        self.assertIn("Lakebase in the other workspace", output)
+        self.assertIn("Create a Lakebase project in the other workspace", output)
+        self.assertIn("its own metastore", output)
+        other.postgres.delete_project.assert_called_once()
 
 
 if __name__ == "__main__":

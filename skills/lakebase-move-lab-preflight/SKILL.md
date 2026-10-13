@@ -15,8 +15,8 @@ Use `lakebase_move_lab_preflight` to check readiness, then explain its actual re
 ## Steps
 
 1. If the notebook is already in their Git folder, have them attach Serverless and click Run all. Use the job cell only if they agree and the notebook isn't already open. Tell them it takes about 3 minutes and deletes its throwaway projects. Use their lab catalog, or `main` if none was named. Use the other workspace's URL only if the new home goes there. A job can't answer the hidden token prompt; have them run **Choose your setup** interactively first if credentials aren't stored.
-2. If you use the job cell, add ONE Python cell with exactly the code in "The cell" below, changing only `CATALOG` and `OTHER_WORKSPACE_URL`, and run it. Don't split, shorten, or rewrite it. It waits for the job to finish, so it runs for a few minutes.
-3. If they already have output, don't run anything. Lead with its verdict: ✅ Ready, ⚠️ Ready with notes, or ❌ Not ready. Show a short table of non-passing checks, their consequences, and the fixes from the output. Include the job run link if present. Match errors in [troubleshooting](../lakebase-move-lab-expert/troubleshooting.md#the-preflight-and-its-genie-code-cell).
+2. If you use the job cell, add ONE Python cell with exactly the code in "The cell" below, changing only `CATALOG`, `OTHER_WORKSPACE_URL`, and `NOTEBOOK_PATH`, and run it. Set `NOTEBOOK_PATH` to the workspace path of `lakebase_move_lab_preflight` in their Git folder when you know it, for example from the folder they have open; otherwise leave it empty. Don't split, shorten, or rewrite the cell. It waits for the job to finish, so it runs for a few minutes.
+3. If they already have output, don't run anything. Lead with its verdict: ✅ Ready, ⚠️ Ready with notes, or ❌ Not ready. Quote the counts line the cell prints; don't count checks yourself. Show a short table of non-passing checks, their consequences, and the fixes from the output. Include the job run link if present. Match errors in [troubleshooting](../lakebase-move-lab-expert/troubleshooting.md#the-preflight-and-its-genie-code-cell).
 4. If leftovers failed, don't resubmit the same job. Follow [preflight results](../lakebase-move-lab-expert/lab-walkthrough.md#preflight-results). Don't change workspace settings or permissions yourself.
 
 ## The cell
@@ -30,6 +30,7 @@ from databricks.sdk import WorkspaceClient
 
 CATALOG = "main"  # the catalog you'll use for the lab's synced table
 OTHER_WORKSPACE_URL = ""  # the other workspace's URL, if the lab's new home goes there
+NOTEBOOK_PATH = ""  # the preflight in your Git folder, like /Users/you@company.com/lakebase-move-lab/lakebase_move_lab_preflight
 REPO = "https://github.com/ryancicak/lakebase-move-lab"
 NOTEBOOK = "lakebase_move_lab_preflight"
 
@@ -41,15 +42,21 @@ task = {"task_key": "preflight", "timeout_seconds": 1800,
 spec = {"run_name": "Lakebase Move Lab preflight", "tasks": [task],
         "git_source": {"git_url": REPO, "git_provider": "gitHub", "git_branch": "main"}}
 source = f"{REPO} (main)"
-try:  # prefer a copy next to this notebook, for example in the lab's Git folder
+candidates = [NOTEBOOK_PATH] if NOTEBOOK_PATH else []
+try:  # or a copy next to this notebook
     here = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-    local = f"{here.rsplit('/', 1)[0]}/{NOTEBOOK}"
-    w.workspace.get_status(local)
+    candidates.append(f"{here.rsplit('/', 1)[0]}/{NOTEBOOK}")
+except Exception:
+    pass
+for local in candidates:  # prefer your own copy, for example in the lab's Git folder
+    try:
+        w.workspace.get_status(local)
+    except Exception:
+        continue
     task["notebook_task"].update(notebook_path=local, source="WORKSPACE")
     spec.pop("git_source")
     source = local
-except Exception:
-    pass
+    break
 
 run_id = w.api_client.do("POST", "/api/2.1/jobs/runs/submit", body=spec)["run_id"]
 print(f"Running the preflight from {source}. This takes about 3 minutes...")
@@ -71,6 +78,9 @@ else:
         print(f"{icon[r['status']]} {r['check']}: {r['detail']}")
         if r["fix"]:
             print(f"     Fix: {r['fix']}")
+    count = {s: sum(r["status"] == s for r in report["results"]) for s in icon}
+    print(f"\n{len(report['results'])} checks: {count['pass']} passed, {count['warn']} warnings, "
+          f"{count['fail']} failed, {count['skip']} skipped.")
     print({"ready": "\n✅ Ready for the lab.",
            "ready with notes": "\n⚠️ Ready for the lab, with the notes above.",
            "not ready": "\n❌ Not ready: fix the items marked ❌, then run this check again."}[report["verdict"]])
