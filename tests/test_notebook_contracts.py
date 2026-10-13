@@ -725,6 +725,45 @@ class PointInTimeTests(unittest.TestCase):
         self.assertEqual(self.preflight_moment(self.WHOLE_MINUTE + 3), self.WHOLE_MINUTE - 1)
         self.assertEqual(self.preflight_moment(self.WHOLE_MINUTE + 10), self.WHOLE_MINUTE + 7)
 
+    def test_lab_keeps_going_when_a_resent_create_finds_its_branch(self):
+        from datetime import datetime, timezone
+        cell = next(cell for cell in source(NOTEBOOKS[0]).split("# COMMAND ----------")
+                    if "# DBTITLE 1,Try to restore the new home to before the move" in cell)
+        projects, show = MagicMock(), MagicMock()
+        projects.postgres.create_branch.side_effect = Exception(
+            'branch already exists; branch_name:"before-the-move"')
+        namespace = {"RESTORE_STARTED": datetime.fromtimestamp(self.WHOLE_MINUTE + 7, timezone.utc), "NEW_ID": "new",
+                     "client": lambda pid: projects, "project_path": lambda pid: f"projects/{pid}",
+                     "branch_path": lambda pid, branch: f"projects/{pid}/branches/{branch}",
+                     "Branch": Recorder, "BranchSpec": Recorder, "Timestamp": Recorder, "Duration": Recorder,
+                     "show": show, "query": MagicMock()}
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(cell, NOTEBOOKS[0], "exec"), namespace)
+        show.assert_called_once()
+        projects.postgres.delete_branch.assert_called_once()
+
+
+class BranchHelperTests(unittest.TestCase):
+    def create(self, error):
+        projects = MagicMock()
+        projects.postgres.get_branch.side_effect = type("NotFound", (Exception,), {})("no such branch")
+        projects.postgres.create_branch.side_effect = error
+        namespace = {"client": lambda pid: projects, "project_path": lambda pid: f"projects/{pid}",
+                     "branch_path": lambda pid, branch: f"projects/{pid}/branches/{branch}",
+                     "Branch": Recorder, "BranchSpec": Recorder, "NotFound": projects.postgres.get_branch.side_effect.__class__}
+        helper = load_function(NOTEBOOKS[0], "create_branch", namespace)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            helper("old", "development")
+        return output.getvalue()
+
+    def test_a_resent_create_that_finds_the_branch_counts_as_created(self):
+        self.assertIn("Created branch development", self.create(Exception("BadRequest: branch already exists")))
+
+    def test_other_create_errors_still_stop(self):
+        with self.assertRaises(PermissionError):
+            self.create(PermissionError("PERMISSION_DENIED"))
+
 
 UndefinedTable = type("UndefinedTable", (Exception,), {})  # psycopg's error before the sync makes its table
 

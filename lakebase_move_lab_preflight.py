@@ -767,12 +767,16 @@ def _():
     moment = int(when)
     if moment % 60 == 0:  # Lakebase failed every point-in-time on a whole minute with INTERNAL_ERROR in testing
         moment -= 1
-    w.postgres.create_branch(
-        parent=f"projects/{PRE_ID}",
-        branch=Branch(spec=BranchSpec(source_branch=f"projects/{PRE_ID}/branches/production",
-                                      source_branch_time=Timestamp(seconds=moment), ttl=Duration(seconds=3600))),
-        branch_id="preflight-pitr",
-    ).wait()
+    try:
+        w.postgres.create_branch(
+            parent=f"projects/{PRE_ID}",
+            branch=Branch(spec=BranchSpec(source_branch=f"projects/{PRE_ID}/branches/production",
+                                          source_branch_time=Timestamp(seconds=moment), ttl=Duration(seconds=3600))),
+            branch_id="preflight-pitr",
+        ).wait()
+    except Exception as e:
+        if "already exists" not in str(e):  # the SDK resends a request whose connection dropped, as in the lab
+            raise
     try:
         with connect("preflight-pitr") as conn:
             conn.execute("SELECT 1")
@@ -794,6 +798,8 @@ def _():
             ).wait()
             break
         except Exception as e:
+            if "already exists" in str(e):  # an earlier try made it before its answer was lost
+                break
             if attempt == 2:
                 raise Warn(f"couldn't create a snapshot in 3 tries ({brief(e, 150)}); "
                            "if that happens in the lab, it skips its snapshot demo")

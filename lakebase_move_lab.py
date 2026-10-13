@@ -666,11 +666,15 @@ def create_branch(pid, branch, source="production"):
     except Exception as e:
         if "RESOURCE_DOES_NOT_EXIST" not in str(e) and "NOT_FOUND" not in str(e).upper():
             raise
-    client(pid).postgres.create_branch(
-        parent=project_path(pid),
-        branch=Branch(spec=BranchSpec(source_branch=branch_path(pid, source), no_expiry=True)),
-        branch_id=branch,
-    ).wait()
+    try:
+        client(pid).postgres.create_branch(
+            parent=project_path(pid),
+            branch=Branch(spec=BranchSpec(source_branch=branch_path(pid, source), no_expiry=True)),
+            branch_id=branch,
+        ).wait()
+    except Exception as e:
+        if "already exists" not in str(e):  # the SDK resends a request whose connection dropped
+            raise
     print(f"Created branch {branch} from {source} in {pid}")
 
 
@@ -1789,13 +1793,17 @@ except NameError:
 moment = int(RESTORE_STARTED.timestamp())
 if moment % 60 == 0:  # Lakebase failed every point-in-time on a whole minute with INTERNAL_ERROR in testing
     moment -= 1       # one second earlier is still before the restore
-client(NEW_ID).postgres.create_branch(
-    parent=project_path(NEW_ID),
-    branch=Branch(spec=BranchSpec(source_branch=branch_path(NEW_ID, "production"),
-                                  source_branch_time=Timestamp(seconds=moment),
-                                  ttl=Duration(seconds=86400))),
-    branch_id="before-the-move",
-).wait()
+try:
+    client(NEW_ID).postgres.create_branch(
+        parent=project_path(NEW_ID),
+        branch=Branch(spec=BranchSpec(source_branch=branch_path(NEW_ID, "production"),
+                                      source_branch_time=Timestamp(seconds=moment),
+                                      ttl=Duration(seconds=86400))),
+        branch_id="before-the-move",
+    ).wait()
+except Exception as e:
+    if "already exists" not in str(e):  # the SDK resends a request whose connection dropped; the first one made it
+        raise
 try:
     show(query(NEW_ID, "before-the-move", "SELECT to_regclass('app.orders') IS NOT NULL AS has_app_tables"))
 finally:
@@ -1822,7 +1830,9 @@ try:
                 snapshot_id="before-the-move",
             ).wait()
             break
-        except Exception:
+        except Exception as e:
+            if "already exists" in str(e):  # an earlier try made it before its answer was lost
+                break
             if attempt == 2:
                 raise
             time.sleep(15)
