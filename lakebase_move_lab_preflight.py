@@ -1014,10 +1014,11 @@ def _():
                 with connect("production") as conn:
                     rows = conn.execute(f"SELECT count(*) FROM {pg_table}").fetchone()[0]
                 failures = 0
-            except Exception:
-                failures += 1
-                if failures >= 3:
-                    raise
+            except Exception as e:
+                if type(e).__name__ != "UndefinedTable":  # the sync makes its table after the create call returns
+                    failures += 1
+                    if failures >= 3:
+                        raise
                 rows = 0
             if "FAILED" in state:
                 raise RuntimeError(f"the sync failed: state {state}, {rows} rows")

@@ -199,10 +199,10 @@ def report(ok, what, fix="", kind="blocker"):
     return False
 
 
-def brief(e):
+def brief(e, with_type=True):
     """An error as one short line, without Spark's JVM stack trace or its Java class name."""
-    text = re.sub(r"^\([\w.$]+\)\s*", "", " ".join(str(e).split("JVM stacktrace")[0].split()))
-    return f"{type(e).__name__}: {text[:200]}"
+    text = re.sub(r"^\([\w.$]+\)\s*", "", " ".join(str(e).split("JVM stacktrace")[0].split()))[:200]
+    return f"{type(e).__name__}: {text}" if with_type else text
 
 
 def reachable(url):
@@ -309,7 +309,7 @@ try:
     report(True, f"Catalog {catalog} for the optional synced table")
 except Exception as e:
     missing = any(s in str(e) for s in ("NO_SUCH_CATALOG", "CATALOG_NOT_FOUND"))
-    report(False, f"Catalog {catalog} for the optional synced table: {brief(e)}",
+    report(False, f"Catalog {catalog} for the optional synced table: {brief(e, with_type=False)}",
            "Put the name of a catalog you can use in box 3." if missing else
            f"To include it, put a catalog where you can create a schema in box 3, or ask your admin for USE CATALOG "
            f"and CREATE SCHEMA on {catalog}. The rest of the lab doesn't need it.", kind="warning")
@@ -1078,10 +1078,11 @@ def wait_for_sync(pid, synced_name, pg_table, expected_rows, timeout=900):
         try:
             rows = query(pid, "production", f"SELECT count(*) AS n FROM {pg_table}")["n"][0]
             failures = 0
-        except Exception:
-            failures += 1
-            if failures >= 3:
-                raise
+        except Exception as e:
+            if type(e).__name__ != "UndefinedTable":  # the sync makes its table after the create call returns
+                failures += 1
+                if failures >= 3:
+                    raise
             rows = 0
         if "FAILED" in state:
             raise RuntimeError(f"{synced_name} failed to sync: state {state}, {rows} rows")

@@ -726,6 +726,67 @@ class PointInTimeTests(unittest.TestCase):
         self.assertEqual(self.preflight_moment(self.WHOLE_MINUTE + 10), self.WHOLE_MINUTE + 7)
 
 
+UndefinedTable = type("UndefinedTable", (Exception,), {})  # psycopg's error before the sync makes its table
+
+
+class SyncWaitTests(unittest.TestCase):
+    ONLINE = "SYNCED_TABLE_ONLINE_NO_PENDING_UPDATE"
+
+    def clock(self):
+        now = [1000.0]
+        return types.SimpleNamespace(time=lambda: now[0], sleep=lambda seconds: now.__setitem__(0, now[0] + seconds))
+
+    def lab_wait(self, outcomes):
+        projects = MagicMock()
+        projects.postgres.get_synced_table.return_value.status.detailed_state.value = self.ONLINE
+        query = MagicMock(side_effect=[{"n": [value]} if isinstance(value, int) else value for value in outcomes])
+        wait = load_function(NOTEBOOKS[0], "wait_for_sync",
+                             {"client": lambda pid: projects, "query": query, "time": self.clock()})
+        return wait("old", "cat.schema.synced", "schema.synced", 50)
+
+    def test_lab_waits_while_the_sync_makes_its_table(self):
+        state, rows, _ = self.lab_wait([UndefinedTable("relation does not exist")] * 5 + [50])
+        self.assertEqual((state, rows), (self.ONLINE, 50))
+
+    def test_lab_still_stops_after_three_other_errors(self):
+        with self.assertRaises(ConnectionError):
+            self.lab_wait([ConnectionError("compute is paused")] * 3)
+
+    def preflight_sync(self, outcomes):
+        tree = ast.parse(source(NOTEBOOKS[1]))
+        function = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                        and any(isinstance(decorator, ast.Call) and isinstance(decorator.args[0], ast.Constant)
+                                and decorator.args[0].value == "Synced table into Lakebase"
+                                for decorator in node.decorator_list))
+        function.decorator_list = []
+        workspace = MagicMock()
+        workspace.postgres.get_synced_table.return_value.status.detailed_state.value = self.ONLINE
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.side_effect = [
+            (value,) if isinstance(value, int) else value for value in outcomes]
+        connect = MagicMock()
+        connect.return_value.__enter__.return_value = connection
+        connect.return_value.__exit__.return_value = False
+        warn = type("Warn", (Exception,), {})
+        namespace = {"time": self.clock(), "w": workspace, "connect": connect, "Warn": warn,
+                     "brief": lambda e: str(e), "PRE_SYNCED": "cat.schema.preflight_synced",
+                     "PRE_SOURCE": "cat.schema.preflight_source", "PRE_ID": "pre", "DB": "databricks_postgres",
+                     "SyncedTable": Recorder, "SyncedTableSyncedTableSpec": Recorder,
+                     "SyncedTableSyncedTableSpecSyncedTableSchedulingPolicy": types.SimpleNamespace(SNAPSHOT="SNAPSHOT")}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
+                     NOTEBOOKS[1], "exec"), namespace)
+        return namespace["_"], warn
+
+    def test_preflight_waits_while_the_sync_makes_its_table(self):
+        check, _ = self.preflight_sync([UndefinedTable("relation does not exist")] * 5 + [10])
+        self.assertIn("all 10 rows landed", check())
+
+    def test_preflight_still_warns_after_three_other_errors(self):
+        check, warn = self.preflight_sync([ConnectionError("compute is paused")] * 3)
+        with self.assertRaises(warn):
+            check()
+
+
 class WorkspaceCheckTests(unittest.TestCase):
     """The lab's Check this workspace cell, with every cloud call mocked."""
 
