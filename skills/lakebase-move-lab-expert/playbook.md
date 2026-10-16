@@ -25,7 +25,7 @@ Don't merge dev's rows into production. To refresh dev, reset it from its parent
 - Decide which branches' data must survive. Usually production moves and children are rebuilt. If you need a different result, see [child branches](#rebuild-child-branches).
 - List every database with `SELECT datname FROM pg_database WHERE NOT datistemplate`. Skip the empty built-in `postgres`. Create extra databases on new production first, for example `CREATE DATABASE reporting;`.
 - Save access rules and synced-table specs. Check that each source Delta table exists in the destination metastore; copying it there is a separate job.
-- Check Postgres versions and `pg_available_extensions` on both sides. The `pg_dump` client must be the same major version as the source or newer. A major-version upgrade requires a new project, not a version change on the existing bundle. [docs] [runs]
+- Check Postgres versions and `pg_available_extensions` on both sides. The `pg_dump` client must be the same major version as the source or newer. A major-version upgrade requires a new project, not a version change on the existing bundle. [docs] [runs] Logical replication doesn't run between Lakebase projects in the same region, so a same-region upgrade still needs a write pause. [docs]
 - Agree on sign-off and abort criteria before stopping writes. Time a practice dump and restore of your own data.
 
 Deploy the new home, but **don't migrate new production**. The full restore brings its schema and migration history with the rows; pre-creating those tables makes it fail. For a one-off you won't manage with a bundle, creating the project in the UI or CLI also works.
@@ -47,6 +47,8 @@ Write the YAML yourself: `bundle generate` has no Lakebase option. To bind an ex
 ### Stop and keep every writer stopped
 
 Stop the app, schedules, scripts, and writers on child branches. The tested move has no live replication; an order written on the old side after the dump won't arrive on the new one. [runs]
+
+If the new home is in another region, logical replication can keep it current until you pause writes, so the pause no longer includes the dump and restore. It doesn't work between Lakebase projects in the same region. [docs] It wasn't tested here; [facts](facts.md#logical-replication) lists what it doesn't copy.
 
 Enforce the pause so clients can't resume or reconnect and write. Removing write grants from the actual writer roles is one option; ending sessions with `pg_terminate_backend` alone doesn't prevent reconnects. Account for ownership and inherited grants too. These enforcement methods weren't tested in the lab.
 
@@ -131,7 +133,7 @@ Restore as yourself, then assign ownership. `pg_restore --role=<owner role>` fai
 
 Secretless GitHub sign-in needs an account admin to configure federation and wasn't tested. The tested CI used a self-hosted runner because the workspace's IP access list blocked GitHub-hosted runners.
 
-Databricks identity roles had `REPLICATION` in the measured runs, unlike password roles. We didn't find documentation for it; only a superuser could remove it. Include that in security review. [runs]
+Databricks identity roles had `REPLICATION` in the measured runs, unlike password roles, and only a superuser could remove it. [runs] The docs now say roles created in the Lakebase App, CLI, or API get it, and roles created with SQL don't. Lakebase runs `wal_level = logical` and supports the `wal2json` decoder. [docs] In standard Postgres, a role with `REPLICATION` can then create a replication slot and read every table's changes in a database it can connect to, regardless of table grants. That wasn't tested on Lakebase. Include it in security review.
 
 ## Shell credentials
 
