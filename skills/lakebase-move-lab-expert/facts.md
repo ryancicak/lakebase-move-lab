@@ -64,7 +64,7 @@ Tags: **[lab]** tested in the lab (dates noted below; current walkthrough in [TE
 
 - After `--no-owner --no-acl`, every restored object belongs to whoever ran `pg_restore`. [runs] [lab]
 - `pg_restore --role=<owner role>` failed on the first `CREATE SCHEMA` with `permission denied for database`. [runs]
-- Every Databricks identity role, CI's included, had the `REPLICATION` attribute in our runs; password roles didn't. [runs] The docs now say roles created in the Lakebase App, CLI, or API get `REPLICATION`, whether or not they're in `databricks_superuser`, and roles created with SQL don't. Lakebase supports the `pgoutput` and `wal2json` decoders. [docs]
+- Every Databricks identity role, CI's included, had the `REPLICATION` attribute in our runs; password roles didn't. [runs] The docs now say roles created in the Lakebase App, CLI, or API get `REPLICATION`, whether or not they're in `databricks_superuser`, and roles created with SQL don't. [docs]
 - Password logins need `enable_pg_native_login` on the project; turning it on took about 2 seconds. [runs]
 - An OAuth database token lasts an hour and is checked only at connect. A 318-second query that spanned expiry finished, and an idle session kept working; a new connection with the expired token was refused. The minimum credential lifetime is 300 seconds. [runs]
 - A four-way parallel `pg_dump -Fd -j 4` on a fresh service principal OAuth token ran clean in 15.6 seconds. [runs]

@@ -133,7 +133,7 @@ Restore as yourself, then assign ownership. `pg_restore --role=<owner role>` fai
 
 Secretless GitHub sign-in needs an account admin to configure federation and wasn't tested. The tested CI used a self-hosted runner because the workspace's IP access list blocked GitHub-hosted runners.
 
-Databricks identity roles had `REPLICATION` in the measured runs, unlike password roles, and only a superuser could remove it. [runs] The docs now say roles created in the Lakebase App, CLI, or API get it, and roles created with SQL don't. Lakebase runs `wal_level = logical` and supports the `wal2json` decoder. [docs] In standard Postgres, a role with `REPLICATION` can then create a replication slot and read every table's changes in a database it can connect to, regardless of table grants. That wasn't tested on Lakebase. Include it in security review.
+Databricks identity roles had `REPLICATION` in the measured runs, unlike password roles, and only a superuser could remove it. [runs] The docs now say roles created in the Lakebase App, CLI, or API get it, and roles created with SQL don't. [docs] With logical replication available, treat `REPLICATION` as a live permission in security review.
 
 ## Shell credentials
 
