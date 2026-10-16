@@ -1319,7 +1319,7 @@ except Exception as e:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC A branch's parent has to be in the same project. To get the orders into this one, use a dump and restore.
+# MAGIC A branch's parent has to be in the same project. To get the orders into this one, use a dump and restore. Logical replication won't help in one workspace either: Lakebase doesn't replicate between two projects in the same region.
 
 # COMMAND ----------
 

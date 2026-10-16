@@ -19,8 +19,7 @@ Tags: **[lab]** tested in the lab (dates noted below; current walkthrough in [TE
 - The restore window (point-in-time history) is 2 to 30 days, 7 by default, and belongs to the project. [docs] The new project records its own history from its creation; it doesn't inherit the old project's past. A point-in-time branch from just before the restore was empty. [lab]
 - A point-in-time branch whose time fell exactly on a whole minute failed with `INTERNAL_ERROR` every time, at every minute tried from 11:25 to 11:31 (America/Chicago); one second either side worked. Seen in AWS on October 13, 2026. [lab]
 - A create can fail and still make the resource. A `500 INTERNAL_ERROR` on a branch create left the branch in place, and an SDK resend after a dropped connection got `branch already exists` for the branch its first request made. Both were seen in Azure on October 13, 2026. [lab]
-- `CREATE PUBLICATION` and `CREATE SUBSCRIPTION` are disabled, so there's no logical replication between projects. [runs]
-- There's no in-place major version upgrade. [docs] Bumping `pg_version` on a deployed bundle plans a delete and recreate of the project. [runs]
+- There's no in-place major version upgrade. [docs] Bumping `pg_version` on a deployed bundle plans a delete and recreate of the project. [runs] Logical replication doesn't run between Lakebase projects in the same region, so a same-region upgrade is still a move with a write pause. [docs]
 
 ## Dump and restore
 
@@ -32,6 +31,16 @@ Tags: **[lab]** tested in the lab (dates noted below; current walkthrough in [TE
 - `pg_dump` against a grandchild branch captured everything that branch sees: what it inherited plus its own changes. [runs]
 - A 20-level branch chain, built empty on the new side and filled with one dump and restore per branch: all 21 branches matched exactly, down to an md5 of every table and view. At that tiny size, each branch took about 7.5 seconds to dump and 3.5 seconds to restore. [runs]
 - A pattern in `--exclude-table` that matches nothing isn't an error, even with `--strict-names`. A view that reads an excluded synced table is still dumped, and the restore fails. (Checked on a local PostgreSQL 17.10.) [runs]
+
+## Logical replication
+
+- As of October 16, 2026, logical replication is available in Lakebase on AWS and Azure, and its docs page has no preview label. Lakebase runs `wal_level = logical`, with no per-project setting to turn on. [docs] Before that, in the September 28 to 30 runs, `CREATE PUBLICATION` and `CREATE SUBSCRIPTION` were disabled. [runs]
+- Between two Lakebase databases, it works only across regions. A subscription to one in the same region hangs and doesn't connect. A project is created in its workspace's region. [docs] So the lab's two projects in one workspace can't use it, and the lab dumps and restores. The tested workspaces, AWS us-west-2 and Azure eastus2, are in different regions and clouds. [lab]
+- It copies rows, not schema. The target tables must exist, empty, before the subscription starts, and later schema changes aren't replicated. Sequence values and identity counters aren't copied, so reset them before writes resume on the new side. Each published table needs a primary key or a replica identity. [docs]
+- The subscriber signs in to the publisher with a password role that has `REPLICATION`, not an OAuth role: the subscription's connection string can't use short-lived tokens. On a Lakebase publisher, that's a native Postgres password role, and password logins are off by default for new projects. The subscriber needs the compute's direct host, not the `-pooler` one. [docs]
+- Replication runs over public networking, without Private Link. The subscriber's account network policy and the publisher's workspace IP access list both apply. [docs]
+- A Lakebase publisher has 10 replication slots and 10 WAL senders; plan one of each per subscriber. A slot keeps WAL on the publisher until its subscriber confirms the changes. Lakebase removes a slot that's been inactive for about 40 hours, and the publisher's compute doesn't scale to zero while a subscriber is replicating. [docs]
+- Child branches don't inherit subscriptions: Lakebase drops them before the branch's compute starts, including after a reset or restore. Restoring a branch deletes its replication slots. [docs]
 
 ## Synced tables
 
@@ -55,7 +64,7 @@ Tags: **[lab]** tested in the lab (dates noted below; current walkthrough in [TE
 
 - After `--no-owner --no-acl`, every restored object belongs to whoever ran `pg_restore`. [runs] [lab]
 - `pg_restore --role=<owner role>` failed on the first `CREATE SCHEMA` with `permission denied for database`. [runs]
-- Every Databricks identity role, CI's included, had the `REPLICATION` attribute in our runs; password roles didn't. Not documented that we found. [runs]
+- Every Databricks identity role, CI's included, had the `REPLICATION` attribute in our runs; password roles didn't. [runs] The docs now say roles created in the Lakebase App, CLI, or API get `REPLICATION`, whether or not they're in `databricks_superuser`, and roles created with SQL don't. [docs]
 - Password logins need `enable_pg_native_login` on the project; turning it on took about 2 seconds. [runs]
 - An OAuth database token lasts an hour and is checked only at connect. A 318-second query that spanned expiry finished, and an idle session kept working; a new connection with the expired token was refused. The minimum credential lifetime is 300 seconds. [runs]
 - A four-way parallel `pg_dump -Fd -j 4` on a fresh service principal OAuth token ran clean in 15.6 seconds. [runs]
@@ -117,3 +126,4 @@ Tags: **[lab]** tested in the lab (dates noted below; current walkthrough in [TE
 - An app that signs in with OAuth through a move (the live-app runs used a password role).
 - Disaster recovery is a separate regional-standby workflow, not a one-time move. It is Private Preview and wasn't tested here. [docs]
 - Lakebase Change Data Feed streams row changes into Delta tables, not into another Lakebase branch. It is Public Preview and wasn't tested here. [docs]
+- Logical replication since it became available, including between the lab's two workspaces.
